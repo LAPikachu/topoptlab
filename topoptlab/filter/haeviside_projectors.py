@@ -239,14 +239,15 @@ class EtaProjectorXu2010(TOFilter):
     """
     
     def __init__(self,
-                 vol_conserving,
+                 vol_conserving: bool,
                  **kwargs: Any) -> None:
         """
         Initialize filter by setting volume conserving flag.
         
         Parameters
         ----------
-        None
+        vol_conserving: bool
+            flag if volume preserving thresholding is done.
         
         Returns
         -------
@@ -326,7 +327,7 @@ class EtaProjectorXu2010(TOFilter):
             design sensitivities with respect to un-filtered design variables.
         """
         return beta * (1 - np.tanh(beta * (x_filtered - eta))**2) /\
-                (np.tanh(beta*eta)+np.tanh(beta*(1-eta)))
+                      (np.tanh(beta*eta)+np.tanh(beta*(1-eta)))
     
     @property
     def vol_conserv(self) -> bool:

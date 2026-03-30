@@ -113,22 +113,38 @@ def test_consistency(nelx,nely,nelz,rmin):
     assert_almost_equal(actual, desired)
     return
 
-from topoptlab.filter.haeviside_projection import find_eta, eta_projection
+from topoptlab.filter.haeviside_projection import find_eta, eta_projection,\
+                                                  find_multieta, multieta_projection
 
-@pytest.mark.parametrize('n, beta, volfrac',
-                         [(10,10,0.3),
-                          (10,1,0.5),])
+@pytest.mark.parametrize('n, beta, volfrac, filter, finder, kwargs',
+                         [(10,10,0.3,eta_projection,find_eta,
+                           {'eta0': 0.5}),
+                          (10,1,0.5,eta_projection,find_eta,
+                           {'eta0': 0.5}),
+                          (10,10,0.3,multieta_projection,find_multieta,
+                           {'etas0': [0.3,0.7]}),
+                          (10,1,0.5,multieta_projection,find_multieta,
+                           {'etas0': [0.3,0.7]})])
 
-def test_volume_conservation(n,beta,volfrac):
+def test_volume_conservation(n,beta,volfrac,filter,finder,kwargs):
     #
     seed(0)
     x = rand(n)
     #
-    assert_almost_equal(eta_projection(xTilde=x,
-                                       eta=find_eta(xTilde=x,
-                                                    beta=beta,
-                                                    eta0=0.5,
-                                                    volfrac=volfrac),
-                                       beta=beta).mean(),
+    params = finder(xTilde=x,
+                    beta=beta,
+                    volfrac=volfrac,
+                    **kwargs)
+    #
+    if filter is multieta_projection:
+        xPhys = filter(xTilde=x,
+                       etas=params,
+                       beta=beta)
+    else:
+        xPhys = filter(xTilde=x,
+                       eta=params,
+                       beta=beta)
+    #
+    assert_almost_equal(xPhys.mean(),
                         volfrac)
     return
