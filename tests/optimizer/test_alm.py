@@ -55,7 +55,14 @@ def test_alm(nvars: int,
     xnew = zeros(x.shape)
     #
     fgradold = None
+    #
     ceqold = 1e5
+    dceq = (2. / nvars) * x
+    dceqold = dceq.copy()
+    # no inequality constraints in this example
+    cineq = zeros((0, 1))
+    dcineq = zeros((nvars,0))
+    dcineqold = dcineq.copy()
     # lagr. multiplier
     lam = zeros((1, 1))
     mu = zeros((0, 1))
@@ -78,13 +85,15 @@ def test_alm(nvars: int,
         dcineq = zeros((nvars,0))
         #
         xnew, lam[:], _ = alm_first_order(x=x[:,0],
-                                          fgrad=fgrad[:,0],
+                                          fgrad=fgrad,
                                           xold=xold[:,0],
                                           fgradold=fgradold,
                                           ceq=ceq,
                                           dceq=dceq,
+                                          dceqold=dceqold,
                                           cineq=cineq,
                                           dcineq=dcineq,
+                                          dcineqold=dcineqold,
                                           lam=lam,
                                           mu=mu,
                                           xmin=xmin[:,0],
@@ -96,10 +105,11 @@ def test_alm(nvars: int,
             rho = rho * rho_scale
         #
         xold[:] = x
-        fgradold = fgrad[:,0]\
-                   + dceq.dot(lam + rho * ceq)[:,0]\
-                   + dcineq.dot(mu + rho * cineq)[:,0]
-        ceqold = ceq 
+        fgradold = fgrad.copy()
+        dceqold = dceq.copy()
+        dcineqold = dcineq.copy()
+        #
+        ceqold = ceq.copy()
         #
         x[:,0] = xnew
         #
