@@ -224,10 +224,10 @@ def find_multieta(etas0: Union[float,np.ndarray],
     #
     if mode == "fixed":
         etas0=np.hstack((etas_fixed, 0.5))
-        func = _find_multieta_fixed
+        func = None#_find_multieta_fixed
     elif mode == "equal":
         etas0=np.linstpace(0, 1, weights.shape[0]+2)[1:-1]
-        func = _find_multieta_equalspaced
+        func = None#_find_multieta_equalspaced
     elif mode == "mse":
         etas0 = np.linspace(0, 1, weights.shape[0]+2)[1:-1]
         func = mean_squared_error
@@ -283,171 +283,6 @@ def find_multieta(etas0: Union[float,np.ndarray],
             raise ValueError("volume conserving eta could not be found: ", result)
     #
     return result
-
-def _find_multieta_equalspaced(etas: np.ndarray, 
-                               xTilde: np.ndarray, 
-                               beta: float,
-                               weights: Union[None,np.ndarray],
-                               volfrac: float
-                               ) -> Tuple[float,np.ndarray]:
-    """
-    Function whose root is the volume preserving threshold.
-
-    Parameters
-    ----------
-    etas : np.ndarray
-        current threshold value.
-    xTilde : np.ndarray
-        intermediate densities (typically before a density filter is applied).
-    beta : np.ndarray
-        sharpness factor. The higher the more we approach the Haeviside
-        function which is recovered in the limit of beta to infinity.
-    weights : None or np.ndarray
-        weights for combining the multiple threshold projections. If None,
-        uniform weights are used.
-    volfrac : float
-        volume fraction.
-
-    Returns
-    -------
-    res : float
-        value of current volume fraction - intended volume fraction.
-    gradient : np.ndarray
-        gradient for Newton procedure
-
-    """
-    #
-    etas = etas + 1/2
-    #
-    xPhys = multieta_projection(etas=etas, 
-                                xTilde=xTilde,
-                                beta=beta, 
-                                weights=weights)
-    # helper terms
-    tanh_bn = np.tanh(beta * etas)
-    tanh_b1n = np.tanh(beta * (1 - etas))
-    tanh_bx_n = np.tanh(beta * (xTilde - etas[None,...]))
-    tanh_bn_x = np.tanh(beta * (etas[None,...] - xTilde))
-    #
-    sech2_bn = 1 - tanh_bn**2
-    sech2_bx_n = 1 - tanh_bx_n**2
-    sech2_b1n = 1 - tanh_b1n**2
-    #
-    denom = tanh_bn + tanh_b1n
-    term =  sech2_bn[None,...] * (tanh_b1n[None,...] + tanh_bn_x) +\
-            sech2_b1n[None,...] * (tanh_bn[None,...] + tanh_bx_n)
-    return xPhys.mean()-volfrac,\
-           -beta*(sech2_bx_n/denom + term/(denom**2)).mean(axis=0)
-
-def _find_multieta_fixed(etas: np.ndarray, 
-                         xTilde: np.ndarray, 
-                         beta: float,
-                         weights: Union[None,np.ndarray],
-                         volfrac: float
-                         ) -> Tuple[float,np.ndarray]:
-    """
-    Function whose root is the volume preserving threshold.
-
-    Parameters
-    ----------
-    etas : np.ndarray
-        current threshold value.
-    xTilde : np.ndarray
-        intermediate densities (typically before a density filter is applied).
-    beta : np.ndarray
-        sharpness factor. The higher the more we approach the Haeviside
-        function which is recovered in the limit of beta to infinity.
-    weights : None or np.ndarray
-        weights for combining the multiple threshold projections. If None,
-        uniform weights are used.
-    volfrac : float
-        volume fraction.
-
-    Returns
-    -------
-    res : float
-        value of current volume fraction - intended volume fraction.
-    gradient : np.ndarray
-        gradient for Newton procedure
-
-    """
-    #
-    etas = etas + 1/2
-    #
-    xPhys = multieta_projection(etas=etas, 
-                                xTilde=xTilde,
-                                beta=beta, 
-                                weights=weights)
-    # helper terms
-    tanh_bn = np.tanh(beta * etas)
-    tanh_b1n = np.tanh(beta * (1 - etas))
-    tanh_bx_n = np.tanh(beta * (xTilde - etas[None,...]))
-    tanh_bn_x = np.tanh(beta * (etas[None,...] - xTilde))
-    #
-    sech2_bn = 1 - tanh_bn**2
-    sech2_bx_n = 1 - tanh_bx_n**2
-    sech2_b1n = 1 - tanh_b1n**2
-    #
-    denom = tanh_bn + tanh_b1n
-    term =  sech2_bn[None,...] * (tanh_b1n[None,...] + tanh_bn_x) +\
-            sech2_b1n[None,...] * (tanh_bn[None,...] + tanh_bx_n)
-    return xPhys.mean()-volfrac,\
-           -beta*(sech2_bx_n/denom + term/(denom**2)).mean(axis=0)
-
-def _find_multieta_mse(etas: np.ndarray, 
-                       xTilde: np.ndarray, 
-                       beta: float,
-                       weights: Union[None,np.ndarray],
-                       volfrac: float
-                       ) -> Tuple[float,np.ndarray]:
-    """
-    Function whose root is the volume preserving threshold.
-
-    Parameters
-    ----------
-    etas : np.ndarray
-        current threshold value.
-    xTilde : np.ndarray
-        intermediate densities (typically before a density filter is applied).
-    beta : np.ndarray
-        sharpness factor. The higher the more we approach the Haeviside
-        function which is recovered in the limit of beta to infinity.
-    weights : None or np.ndarray
-        weights for combining the multiple threshold projections. If None,
-        uniform weights are used.
-    volfrac : float
-        volume fraction.
-
-    Returns
-    -------
-    res : float
-        value of current volume fraction - intended volume fraction.
-    gradient : np.ndarray
-        gradient for Newton procedure
-
-    """
-    #
-    etas = etas + 1/2
-    #
-    xPhys = multieta_projection(etas=etas, 
-                                xTilde=xTilde,
-                                beta=beta, 
-                                weights=weights)
-    # helper terms
-    tanh_bn = np.tanh(beta * etas)
-    tanh_b1n = np.tanh(beta * (1 - etas))
-    tanh_bx_n = np.tanh(beta * (xTilde - etas[None,...]))
-    tanh_bn_x = np.tanh(beta * (etas[None,...] - xTilde))
-    #
-    sech2_bn = 1 - tanh_bn**2
-    sech2_bx_n = 1 - tanh_bx_n**2
-    sech2_b1n = 1 - tanh_b1n**2
-    #
-    denom = tanh_bn + tanh_b1n
-    term =  sech2_bn[None,...] * (tanh_b1n[None,...] + tanh_bn_x) +\
-            sech2_b1n[None,...] * (tanh_bn[None,...] + tanh_bx_n)
-    return xPhys.mean()-volfrac,\
-           -beta*(sech2_bx_n/denom + term/(denom**2)).mean(axis=0)
 
 def mean_squared_error(etas: np.ndarray, 
                        xTilde: np.ndarray, 
@@ -650,5 +485,5 @@ if __name__ == "__main__":
     print("finite diff d(xPhys)/d(etas):")
     print(xPhys_deta_fd)
     print("analytic d(xPhys)/d(etas):")
-    print(xPhys_deta)
+    print(xPhys_deta.shape)
     print("max abs err:", np.max(np.abs(xPhys_deta - xPhys_deta_fd)))
