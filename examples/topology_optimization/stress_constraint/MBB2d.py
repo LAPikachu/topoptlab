@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from typing import Callable, Dict
-from functools import partial
-import logging
-#
 import numpy as np
-from scipy.sparse.linalg import factorized
-from scipy.ndimage import convolve
-#
-from matplotlib.colors import Normalize
+from matplotlib import colors
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 # functions to create filters
 from topoptlab.filter.matrix_filter import assemble_matrix_filter
 from topoptlab.filter.haeviside_projection import find_eta
@@ -25,8 +18,8 @@ from topoptlab.elements.stress_measures import von_mises_stress
 from topoptlab.elements.stress_measures import dsvm_ds
 # different elements/physics
 from topoptlab.stiffness_tensors import isotropic_2d,isotropic_3d
-from topoptlab.elements.linear_elasticity_2d import _lf_strain_2d,lk_linear_elast_aniso_2d,lk_linear_elast_2d
-from topoptlab.elements.linear_elasticity_3d import _lf_strain_3d,lk_linear_elast_aniso_3d
+from topoptlab.elements.linear_elasticity_2d import lk_linear_elast_aniso_2d
+from topoptlab.elements.linear_elasticity_3d import lk_linear_elast_aniso_3d
 from topoptlab.elements.bodyforce_2d import lf_bodyforce_2d
 from topoptlab.elements.bodyforce_3d import lf_bodyforce_3d
 
@@ -35,20 +28,12 @@ from topoptlab.material_interpolation import simp,simp_dx,ramp,ramp_dx
 from topoptlab.fem import assemble_matrix,apply_bc
 from topoptlab.solve_linsystem import solve_lin
 # constrained optimizers
-from topoptlab.optimizer.optimality_criterion import oc_top88,oc_mechanism,oc_generalized
 from topoptlab.optimizer.mma_utils import update_mma,mma_defaultkws,gcmma_defaultkws
-from mmapy import mmasub
 from topoptlab.objectives import stress_pnorm,compliance
 # output final design to a Paraview readable format
 from topoptlab.output_designs import export_vtk,threshold
-# map element data to img/voxel
-from topoptlab.utils import map_eltoimg,map_imgtoel,map_eltovoxel,map_voxeltoel,\
-                            check_simulation_params,dict_without,\
-                            default_outputkw,check_output_kw,check_optimizer_kw
 # logging related stuff
 from topoptlab.log_utils import EmptyLogger,init_logging
-# drawing function
-from topoptlab.draw_functions import spring, hinged_support
 
 # MAIN DRIVER
 def main(nelx: int, nely: int, nelz: int | None,
@@ -62,7 +47,7 @@ def main(nelx: int, nely: int, nelz: int | None,
         el_flags: np.ndarray | None = None,
         optimizer: str = "mma", optimizer_kw: Dict | None = None,
         Pnorm: float = 10, penal_sig: float = 0.5,
-        use_stress_constraint: bool = False,stress_allow: float = 1.5,
+        use_stress_constraint: bool = False,stress_allow: float = 0.45,
         nouteriter: int = 2000, ninneriter: int = 15,
         file: str = "lbracket",
         matinterpol: Callable = simp, matinterpol_dx: Callable = simp_dx,
@@ -203,7 +188,8 @@ def main(nelx: int, nely: int, nelz: int | None,
         n = nelx * nely
     elif ndim == 3:
         n = nelx * nely * nelz
-    #
+    if body_forces_kw is None:
+        body_forces_kw = {}
     if isinstance(l,float):
         l = np.array( [l for i in np.arange(ndim)])
     # Allocate design variables (as array), initialize and allocate sens.
@@ -251,26 +237,21 @@ def main(nelx: int, nely: int, nelz: int | None,
     # upper, lower volume constr or stress constraint
     n_constr = 1 + int(use_stress_constraint)  
 
-
-    optimizer_kw = check_optimizer_kw(optimizer=optimizer,
-                                      n=x.shape[0],
-                                      ft=ft,
-                                      n_constr=n_constr,
-                                      optimizer_kw=optimizer_kw)
-
-
-    if optimizer in ["oc","ocm","ocg"]:
-        # must be initialized to use the NGuyen/Paulino OC approach
-        g = 0
-    elif optimizer == "mma":
+    if optimizer == "mma":
         # mma needs results of the two previous iterations
         nhistory = 2            
         # n variables: x only
-        xhist = [x.copy(), x.copy(), x.copy()]
-        nvars = n     
+        xhist = [x.copy(), x.copy()]
+        nvars = n
+        optimizer_kw = mma_defaultkws(nvars, ft=ft, n_constr=n_constr)
+        optimizer_kw["xmin"] = np.zeros(nvars)
+        optimizer_kw["xmax"] = np.ones(nvars)
+        optimizer_kw["low"]  = np.ones(nvars)
+        optimizer_kw["upp"]  = np.ones(nvars)           
         if ft == 5:
             optimizer_kw["move"] = 0.05
-
+    else:
+        raise ValueError("Unknown optimizer: ", optimizer)
     # handle element element flags
     if el_flags is not None and optimizer in ["mma","gcmma"]:
         # passive
@@ -289,9 +270,7 @@ def main(nelx: int, nely: int, nelz: int | None,
     if ndim == 2:
         KE  = np.zeros((n, 8, 8), dtype=float)
         for e in np.arange(n):
-            # KE[e, :, :] = lk_linear_elast_aniso_2d(c=cs[e, :, :], l=l,g=np.array([0.]),t=1.0)
-            KE[e, :, :] = lk_linear_elast_2d(E=Emax,nu=nu)
-        # lk_linear_elast_2d
+            KE[e, :, :] = lk_linear_elast_aniso_2d(c=cs[e, :, :], l=l,g=np.array([0.]),t=1.0)
         # infer nodal degrees of freedom assuming that we have 4/8 nodes in 2/3 dimension
         n_ndof = int(KE.shape[-1]/4)
         # number of degrees of freedom
@@ -311,71 +290,21 @@ def main(nelx: int, nely: int, nelz: int | None,
         edofMat, n1, n2, n3, n4 = create_edofMat3d(nelx=nelx,nely=nely,nelz=nelz,
                                                    nnode_dof=n_ndof)
     # fetch body forces
-    if len(body_forces_kw.keys())==0:
-        fe_strain = None
-        fe_dens = None
+    if "density_coupled" in body_forces_kw:
+        # fetch functions to create body force
+        if ndim == 2 and n_ndof!=1:
+            lf = lf_bodyforce_2d
+        elif ndim == 3 and n_ndof!=1:
+            lf = lf_bodyforce_3d
+        fe_dens = lf(b=body_forces_kw["density_coupled"],l=l)
     else:
-        # assume each strain is a column vector in Voigt notation
-        if "strain_uniform" in body_forces_kw.keys():
-            # fetch functions to create body force
-            if ndim == 2:
-                lf = _lf_strain_2d
-            elif ndim == 3:
-                lf = _lf_strain_3d
-            # calculate forces for each strain
-            fe_strain = []
-            if len(body_forces_kw["strain_uniform"].shape) == 1:
-                body_forces_kw["strain_uniform"] = body_forces_kw["strain_uniform"][:,None]
-            #
-            for i in range(body_forces_kw["strain_uniform"].shape[-1]):
-                fe_strain.append(lf(body_forces_kw["strain_uniform"][:,i],E=1.0, l=l))
-            fe_strain = np.column_stack(fe_strain)
-            # find the imposed elemental field. Material properties are
-            # unimportant here as it just depends on the geometry of the
-            # element, not its properties. This part is needed for
-            # homogenization related objective functions and may later
-            # become optional via some flags.
-            if ndim == 2 and n_ndof != 1:
-                fixed = np.array([0,1,3])
-            elif ndim == 3 and n_ndof != 1:
-                fixed = np.array([0,1,2,4,5,7,8])
-            elif n_ndof == 1:
-                fixed = np.array([0])
-            free = np.setdiff1d(np.arange(KE.shape[-1]), fixed)
-            u0 = np.zeros(fe_strain.shape)
-            u0[free] = np.linalg.solve(KE[free,:][:,free],
-                                       fe_strain[free,:])
-            if "u0" not in obj_kw.keys():
-                obj_kw["u0"] = u0
-        else:
-            fe_strain = None
-            u0 = None
-        #
-        if "density_coupled" in body_forces_kw.keys():
-            # fetch functions to create body force
-            if ndim == 2 and n_ndof!=1:
-                lf = lf_bodyforce_2d
-            elif ndim == 3 and n_ndof!=1:
-                lf = lf_bodyforce_3d
-            fe_dens = lf(b=body_forces_kw["density_coupled"],l=l)
-        else:
-            fe_dens = None
-        #
-        if len([key for key in body_forces_kw.keys() \
-                if key not in ["density_coupled","strain_uniform"]]):
-            raise NotImplementedError("One type of bodyforce/source has not yet been implemented.")
+        fe_dens = None
+    #
+    if len([key for key in body_forces_kw.keys() \
+            if key not in ["density_coupled","strain_uniform"]]):
+        raise NotImplementedError("One type of bodyforce/source has not yet been implemented.")
     # Construct the index pointers for the coo format
     iK,jK = create_matrixinds(edofMat=edofMat,mode=assembly_mode)
-    if assembly_mode == "lower":
-        assm_indcs = np.column_stack(np.triu_indices_from(KE))
-    # function to convert densities, etc. to images/voxels for plotting or the
-    # convolution filter.
-    if ndim == 2:
-        mapping = partial(map_eltoimg,
-                          nelx=nelx,nely=nely)
-    elif ndim == 3:
-        mapping = partial(map_eltovoxel,
-                          nelx=nelx,nely=nely,nelz=nelz)
     # Filter: Build (and assemble) the index+data vectors for the coo matrix format
     if filter_mode == "matrix":
         H,Hs = assemble_matrix_filter(nelx=nelx,nely=nely,nelz=nelz,
@@ -386,27 +315,22 @@ def main(nelx: int, nely: int, nelz: int | None,
     if display:
         # Initialize plot and plot the initial design
         plt.ion()  # Ensure that redrawing is possible
-        if ndim == 2:
-            fig,ax = plt.subplots(1,1)
-            im = ax.imshow(mapping(-xPhys), cmap='gray',
-                           interpolation='none', norm=Normalize(vmin=-1, vmax=0))
-            plotfunc = im.set_array
-        elif ndim == 3:
-            raise NotImplementedError("Plotting in 3D not yet implemented.")
+        fig,ax = plt.subplots()
+        im = ax.imshow(-xPhys.reshape((nely,nelx),order="F"), cmap='gray',
+                       interpolation='none',norm=colors.Normalize(vmin=-1,vmax=0))
         ax.tick_params(axis='both',
                        which='both',
                        bottom=False,
                        left=False,
                        labelbottom=False,
                        labelleft=False)
-        ax.axis("off")
         fig.show()
     dconstr_stress_dx = np.zeros((n, 1), order="F")
     constr_stress = 0.0
     c_stress = None
     # optimization loop
-    lamU = np.zeros(f.shape)
     loopbeta = 0
+    lamU = np.zeros(f.shape)
     for loop in np.arange(nouteriter):
         #
         loopbeta += 1  
@@ -416,89 +340,70 @@ def main(nelx: int, nely: int, nelz: int | None,
         Kes = KE*scale[:,:,None]
         # solve FEM, calculate obj. func. and gradients.
         # for
-        if optimizer in ["oc","mma", "ocm","ocg"] or\
-           (optimizer in ["gcmma"] and ninneriter==0) or\
-           loop==0:
-            # update physical properties of the elements and thus the entries
-            # of the elements
-            if assembly_mode == "full":
-                # this here is more memory efficient than Kes.flatten() as it
-                # provides a view onto the original Kes array instead of a copy
-                sK = Kes.reshape(np.prod(Kes.shape))
-            elif assembly_mode == "symmetry":
-                sK = Kes[:,assm_indcs[0],assm_indcs[1]].reshape( n*ndof*(ndof+1) )
-            # Setup and solve FE problem
-            # assemble system matrix
-            K = assemble_matrix(sK=sK,iK=iK,jK=jK,
-                                ndof=ndof,solver=lin_solver,
-                                springs=springs)
-            # assemble forces due to body forces
-            f_body = np.zeros(f.shape)
-            for bodyforce in body_forces_kw.keys():
-                # assume each strain is a column vector in Voigt notation
-                if "strain_uniform" in body_forces_kw.keys():
-                    fes = fe_strain[None,:,:]*scale[:,:,None]
-                    np.add.at(f_body,
-                              edofMat,
-                              fes)
-                if "density_coupled" in body_forces_kw.keys():
-                    fes = fe_dens[None,:,:]*simp(xPhys=xPhys, eps=0., penal=1.)[:,:,None]
-                    np.add.at(f_body,
-                              edofMat,
-                              fes)
-            # assemble right hand side
-            rhs = f+f_body
-            # apply boundary conditions to matrix
-            K = apply_bc(K=K,solver=lin_solver,
-                         free=free,fixed=fixed)
-            # solve linear system. fact is a factorization and precond a preconditioner
-            u[free, :], fact, precond = solve_lin(K=K, rhs=rhs[free],
-                                                  solver=lin_solver,
-                                                  preconditioner=preconditioner)     
-            # Objective and objective gradient
-            obj = 0
-            dobj[:] = 0.
-            for i in np.arange(f.shape[1]):
-                # obj. value, selfadjoint variables, self adjoint flag
-                obj,rhs_adj,self_adj = obj_func(obj=obj, i=i,
-                                                xPhys=xPhys,u=u,
-                                                KE=KE, edofMat=edofMat,
-                                                Kes=Kes,
-                                                matinterpol=matinterpol,
-                                                matinterpol_kw=matinterpol_kw,
-                                                **obj_kw)
-                # update sensitivity for quantities that need a small offset to
-                # avoid degeneracy of the FE problem
-                #"""
-                # if problem not self adjoint, solve for adjoint variables and
-                # calculate derivatives, else use analytical solution
-                # if problem not self adjoint, solve for adjoint variables and
-                # calculate derivatives, else use analytical solution
-                if self_adj:
-                    #dobj[:] += rhs_adj
-                    lamU[free,i] = rhs_adj[free,i]
-                else:
-                    lamU = np.zeros(f.shape)
-                    lamU[free],_,_ = solve_lin(K, rhs=rhs_adj[free],
-                                            solver=lin_solver, P=precond,
-                                            preconditioner = preconditioner)
-                # update sensitivity for quantities that need a small offset to
-                # avoid degeneracy of the FE problem
-                # standard contribution of element stiffness/conductivity
-                # add explicit term
-                dobj_offset = np.matvec(KE,u[edofMat,i])
-                # contribution due to force induced by strain
-                if "strain_uniform" in body_forces_kw.keys():
-                    dobj_offset -= fe_strain[None,:,i]
-                dobj[:,0] += (dscale*lamU[edofMat,i]*dobj_offset).sum(axis=1)
-                # update sensitivity for quantities that do not need a small
-                # offset to avoid degeneracy of the FE problem
-                if "density_coupled" in body_forces_kw.keys():
-                    dobj[:,0] -= simp_dx(xPhys=xPhys, eps=0., penal=1.)[:,0]*\
-                                    np.dot(lamU[edofMat,i],fe_dens[:,i]) 
-                if debug:
-                    print("FEM: it.: {0}, problem: {1}, min. u: {2:.10f}, med. u: {3:.10f}, max. u: {4:.10f}".format(
-                           loop,i,np.min(u[:,i]),np.median(u[:,i]),np.max(u[:,i])))
+        # update physical properties of the elements and thus the entries
+        # of the elements
+        sK = Kes.reshape(np.prod(Kes.shape))
+        # Setup and solve FE problem
+        # assemble system matrix
+        K = assemble_matrix(sK=sK,iK=iK,jK=jK,
+                            ndof=ndof,solver=lin_solver,
+                            springs=springs)
+        # assemble forces due to body forces
+        f_body = np.zeros(f.shape)
+        if "density_coupled" in body_forces_kw:
+            fes = fe_dens[None,:,:]*simp(xPhys=xPhys, eps=0., penal=1.)[:,:,None]
+            np.add.at(f_body,
+                        edofMat,
+                        fes)
+        # assemble right hand side
+        rhs = f+f_body
+        # apply boundary conditions to matrix
+        K = apply_bc(K=K,solver=lin_solver,
+                        free=free,fixed=fixed)
+        # solve linear system. fact is a factorization and precond a preconditioner
+        u[free, :], fact, precond = solve_lin(K=K, rhs=rhs[free],
+                                                solver=lin_solver,
+                                                preconditioner=preconditioner)     
+        # Objective and objective gradient
+        obj = 0
+        dobj[:] = 0.
+        for i in np.arange(f.shape[1]):
+            # obj. value, selfadjoint variables, self adjoint flag
+            obj,rhs_adj,self_adj = obj_func(obj=obj, i=i,
+                                            xPhys=xPhys,u=u,
+                                            KE=KE, edofMat=edofMat,
+                                            Kes=Kes,
+                                            matinterpol=matinterpol,
+                                            matinterpol_kw=matinterpol_kw,
+                                            **obj_kw)
+            # update sensitivity for quantities that need a small offset to
+            # avoid degeneracy of the FE problem
+            #"""
+            # if problem not self adjoint, solve for adjoint variables and
+            # calculate derivatives, else use analytical solution
+            # if problem not self adjoint, solve for adjoint variables and
+            # calculate derivatives, else use analytical solution
+            if self_adj:
+                #dobj[:] += rhs_adj
+                lamU[free] = rhs_adj[free]
+            else:
+                lamU[free],_,_ = solve_lin(K, rhs=rhs_adj[free],
+                                        solver=lin_solver, P=precond,
+                                        preconditioner = preconditioner)
+            # update sensitivity for quantities that need a small offset to
+            # avoid degeneracy of the FE problem
+            # standard contribution of element stiffness/conductivity
+            # add explicit term
+            dobj_offset = np.matvec(KE,u[edofMat,i])
+            dobj[:,0] += (dscale*lamU[edofMat,i]*dobj_offset).sum(axis=1)
+            # update sensitivity for quantities that do not need a small
+            # offset to avoid degeneracy of the FE problem
+            if "density_coupled" in body_forces_kw:
+                dobj[:,0] -= simp_dx(xPhys=xPhys, eps=0., penal=1.)[:,0]*\
+                                np.dot(lamU[edofMat,i],fe_dens[:,i]) 
+            if debug:
+                print("FEM: it.: {0}, problem: {1}, min. u: {2:.10f}, med. u: {3:.10f}, max. u: {4:.10f}".format(
+                        loop,i,np.min(u[:,i]),np.median(u[:,i]),np.max(u[:,i])))
         
         ue = u[edofMat, 0]
         # interpolated constitutive tensor
@@ -536,13 +441,11 @@ def main(nelx: int, nely: int, nelz: int | None,
                                     preconditioner = preconditioner)
             dconstr_stress_dx[:, 0] = dsP_dx[:, 0]
             dobj_offset = np.matvec(KE,u[edofMat,i])
-            # contribution due to force induced by strain
-            if "strain_uniform" in body_forces_kw.keys():
-                dobj_offset -= fe_strain[None,:,i]
+
             dconstr_stress_dx[:,0] += (dscale*lamU[edofMat,i]*dobj_offset).sum(axis=1)
             # update sensitivity for quantities that do not need a small
             # offset to avoid degeneracy of the FE problem
-            if "density_coupled" in body_forces_kw.keys():
+            if "density_coupled" in body_forces_kw:
                 dconstr_stress_dx[:,0] -= simp_dx(xPhys=xPhys, eps=0., penal=1.)[:,0]*\
                                 np.dot(lamU[edofMat,i],fe_dens[:,i]) 
             
@@ -556,10 +459,6 @@ def main(nelx: int, nely: int, nelz: int | None,
                 c_stress = alpha_c * c_stress + (1.0 - alpha_c) * c_target
             dconstr_stress_dx = c_stress * dconstr_stress_dx / stress_allow
             constr_stress = c_stress * stress_p / stress_allow - 1.0
-            # elems = [0, n // 4, n // 2, 3 * n // 4, n - 1]
-            # fd_check_dconstr_stress_corrected(
-            #     xPhys, dconstr_stress_dx, c_stress, elems, h=1e-6
-            # )
 
         if loop == 0:
             if export:
@@ -579,7 +478,7 @@ def main(nelx: int, nely: int, nelz: int | None,
         constr_list.extend([vol_up])
         if use_stress_constraint:
             constr_list.append(float(constr_stress))
-        constrs = np.asarray(constr_list, dtype=float).reshape(-1, 1)
+        constrs = np.asarray(constr_list, dtype=float).ravel()
 
         dconstr = np.zeros((n, n_constr), dtype=float)
         col = 0
@@ -595,9 +494,8 @@ def main(nelx: int, nely: int, nelz: int | None,
             #dobj[:] = H @ (dc*x) / Hs / np.maximum(0.001, x)
         elif ft == 1 and filter_mode == "matrix":
             dobj[:] = np.asarray(H*(dobj/Hs))
-            dconstr[:] = np.asarray(H*(dconstr/Hs))
-            # for j in range(col):
-            #     dconstr[:n, j] = np.asarray(H*((dconstr[:n, j])[:, None] / Hs))[:, 0]
+            for j in range(col):
+                dconstr[:n, j] = np.asarray(H*((dconstr[:n, j])[:, None] / Hs))[:, 0]
         elif ft == 5:
             xTilde[:] = np.asarray(H * x/ Hs)
             xBase[:] = xTilde.copy()
@@ -618,42 +516,24 @@ def main(nelx: int, nely: int, nelz: int | None,
         # density update by solver
         xold[:] = x
         xPhysold = xPhys.copy()
-        # optimality criteria
-        if optimizer=="oc":
-            (x[:], g) = oc_top88(x=x, volfrac=volfrac,
-                                 dc=dobj, dv=dv, g=g,
-                                 el_flags=el_flags)
-        elif optimizer=="ocm":
-            (x[:], g) = oc_mechanism(x=x, volfrac=volfrac,
-                                     dc=dobj, dv=dv, g=g,
-                                     el_flags=el_flags)
-        elif optimizer=="ocg":
-            (x[:], g) = oc_generalized(x=x, volfrac=volfrac,
-                                       dc=dobj, dv=dv, g=g,
-                                       el_flags=el_flags)
         # method of moving asymptotes
-        elif optimizer == "mma":
-            xmma,ymma,zmma,lam,xsi,eta_mma,mu,zet,s,low,upp = mmasub(m=optimizer_kw["nconstr"],
-                                                                 n=x.shape[0],
-                                                                 iter=loop+1,
-                                                                 xval=x,
-                                                                 xold1=xhist[-1],
-                                                                 xold2=xhist[-2],
-                                                                 f0val=obj,
-                                                                 df0dx=dobj,
-                                                                 fval=constrs,
-                                                                 dfdx=dconstr.T,
-                                                                 **optimizer_kw)
-
-            # update asymptotes
-            optimizer_kw["low"] = low
-            optimizer_kw["upp"] = upp
-            x = xmma.copy()
-            # xhist.pop(0); 
-            xhist.append(x.copy())
-            # prune history if too long
-            if len(xhist)> 3+1:
-                xhist = xhist[-3-1:]
+        if optimizer == "mma":
+            nvars = n
+            xold1  = np.asarray(xhist[-1], dtype=float).reshape(nvars, 1)  
+            xold2  = np.asarray(xhist[-2], dtype=float).reshape(nvars, 1)  
+            for j in ("xmin", "xmax", "low", "upp"):
+                optimizer_kw[j] = np.asarray(optimizer_kw[j], dtype=float).reshape(nvars, 1)  
+            xmma, ymma, zmma, lam, xsi, eta_mma, mu, zet, s, low, upp = update_mma(
+                x=np.asarray(x, dtype=float).ravel(), xold1=xold1, xold2=xold2, 
+                xPhys=np.asarray(x, dtype=float).ravel(),
+                obj=np.asarray(obj, dtype=float), dobj=np.asarray(dobj, dtype=float).ravel(),
+                constrs=constrs,
+                dconstr=np.asarray(dconstr, dtype=float),
+                iteration=loop, **optimizer_kw
+            )
+            x[:] = np.asarray(xmma, dtype=float).reshape(nvars, 1) 
+            xhist.pop(0); xhist.append(x.copy())
+            optimizer_kw["low"] = low; optimizer_kw["upp"] = upp
             # print(f"fval: {constrs}, max_violation: {np.maximum(constrs,0).max():.3e}")    
         if debug:
             print("Post Density Update: it.: {0}, med. x.: {1:.10f}, med. xTilde: {2:.10f}, med. xPhys: {3:.10f}".format(
@@ -678,7 +558,7 @@ def main(nelx: int, nely: int, nelz: int | None,
                    loop, np.median(x),np.median(xTilde),np.median(xPhys)))
         
         # Compute the change by the inf. norm
-        change = np.abs(xhist[-1] - xhist[-2]).max()
+        change = np.abs(xPhys-xPhysold).max()
         export_every = 100
         if export and ((loop + 1) % export_every == 0):
             export_vtk(
@@ -692,10 +572,7 @@ def main(nelx: int, nely: int, nelz: int | None,
 
         # Plot to screen
         if display:
-            if ndim == 2:
-                plotfunc(mapping(-xPhys))
-            elif ndim == 3:
-                im.set_array(mapping(-xPhys))
+            im.set_array(-xPhys.reshape((nely,nelx),order="F"))
             fig.canvas.draw()
             plt.pause(0.01)
         # Write iteration history to screen (req. Python 2.6 or newer)
@@ -703,7 +580,7 @@ def main(nelx: int, nely: int, nelz: int | None,
             to_log("it.: {0} obj.: {1:.10f} vol.: {2:.10f} ch: {3:.10f}".format(
                          loop+1, obj, xPhys.mean(), change))
         # convergence check
-        if change < 0.01 and beta is None and loop >300:
+        if change < 0.01 and beta is None and loop >200:
             break
         # parameter continuation for beta in volume projection
         elif (ft == 5) and (beta < 256) and \
@@ -721,10 +598,10 @@ def main(nelx: int, nely: int, nelz: int | None,
     #
     xThresh = threshold(xPhys,volfrac)
     scale = matinterpol(xPhys=xThresh,eps=1e-9, penal=penal)
+    Kes = KE*scale[:,:,None]
     # update physical properties of the elements and thus the entries
     # of the elements 
-    if assembly_mode == "full":
-        sK = (scale[:,:,None] * KE).flatten() 
+    sK = (scale[:,:,None] * KE).flatten() 
     # Setup and solve FE problem
     # To Do: loop over boundary conditions if incompatible
     # assemble system matrix
@@ -733,18 +610,11 @@ def main(nelx: int, nely: int, nelz: int | None,
                         springs=springs)
     u0 = None
     f_body = np.zeros(f.shape)
-    for bodyforce in body_forces_kw.keys():
-        # assume each strain is a column vector in Voigt notation
-        if "strain_uniform" in body_forces_kw.keys():
-            fes = fe_strain[None,:,:]*scale[:,:,None]
-            np.add.at(f_body,
-                      edofMat,
-                      fes)
-        if "density_coupled" in body_forces_kw.keys():
-            fes = fe_dens[None,:,:]*simp(xPhys=xThresh, eps=0., penal=1.)[:,:,None]
-            np.add.at(f_body,
-                      edofMat,
-                      fes)
+    if "density_coupled" in body_forces_kw:
+        fes = fe_dens[None,:,:]*simp(xPhys=xThresh, eps=0., penal=1.)[:,:,None]
+        np.add.at(f_body,
+                    edofMat,
+                    fes)
     # assemble right hand side
     rhs = f+f_body
     # apply boundary conditions to matrix
@@ -791,63 +661,18 @@ def main(nelx: int, nely: int, nelz: int | None,
             volfrac=volfrac) 
     return obj
 
-def sketch(save=False):
-    """
-    Just a sketch to indicate boundary conditions etc.
-    """
-
-    fig,ax = plt.subplots(figsize=(16,6))
-    # bottom layer
-    ax.plot(np.array([0,1,1,0,0]),np.array([0,0,1,1,0]),c="k")
-    # top layer
-    ax.plot(np.array([0,1,1,0,0]),np.array([1,1,2,2,1]),c="k")
-    # arrows for indication of layer orientation
-    for i in range(5):
-        ax.arrow(x=0.1 + i*0.2, y=0.7, dx=0., dy=-0.4,
-                 width=0.002, head_length=0.2,
-                 color="k")
-        ax.arrow(x=0.05+ i*0.2, y=1.5, dx=0.1, dy=0,
-                 width=0.01, color="k")
-    # spring
-    x,y = spring(x0=1.,y0=2.,
-                 num_coils = 3, coil_width = 0.02,
-                 coil_length = 0.4, points_per_coil = 8)
-    ax.plot(x,y,
-            linewidth=2.,color="gray")
-    x,y = spring(x0=0.,y0=2.,
-                 num_coils = 3, coil_width = 0.02,
-                 coil_length = 0.4, points_per_coil = 8)
-    ax.plot(x,y,
-            linewidth=2.,color="gray")
-    # mirror axis
-    ax.axvline(x=0.5, ymin = -1, ymax = 3.,
-               color="b", linestyle="--", linewidth=3.,
-               alpha = 0.7)
-    #
-    hinged_support(x0=0.5,y0=0.,
-                   ax=ax,fig=fig,
-                   triangle_width=.15,
-                   radius=0.05)
-    #
-    ax.axis("off")
-    ax.set_ylim(-0.5,2.5)
-    if save:
-        plt.savefig(fname="sketch.pdf",format="pdf",bbox_inches="tight")
-    plt.show()
-    return
-
 # The real main driver
 if __name__ == "__main__":
     #
     #sketch(save=True)
     # Default input parameters
-    nelx = 60
-    nely = int(nelx/3)
+    nelx=60
+    nely=int(nelx/3)
     nelz=None
     volfrac=0.5
     rmin=2.4
     penal=3
-    ft=1 # ft==0 -> sens, ft==1 -> dens
+    ft=1 
     elem_size=1.0
     nouteriter=2000
     export=True
@@ -880,13 +705,14 @@ if __name__ == "__main__":
     obj = main(nelx=nelx,nely=nely,nelz=nelz,volfrac=volfrac,penal=penal,rmin=rmin,ft=ft,
          obj_func=compliance,
          body_forces_kw={"density_coupled": np.array([0,-1e-7])},
+        #  el_flags = el_flags,
          display=display,
          bcs=bcs,
-         file='mbb_s',
+         file='mbb_2d',
          nouteriter=nouteriter,
          use_stress_constraint=use_stress_constraint,
          export=export,write_log=write_log)
     # for tests
-    # np.savetxt("stress_lbracket_obj.csv", np.array([obj]), delimiter=",")
+    np.savetxt("stress_lbracket_obj.csv", np.array([obj]), delimiter=",")
     
 
