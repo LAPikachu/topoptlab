@@ -10,12 +10,12 @@ import sys
 @pytest.mark.parametrize(
     "example_file, params",
     [
-        ("Lbracket.py", "30 10 0.5 .8 3 1 20 0 0 0"),
+        ("stiffness_rotation.py", "30 10 0.5 0.8 1 20 0 0 0"),
     ],
 )
-def test_stress_lbracket(tmp_path, example_file, params):
+def test_stiffness_rotation(tmp_path, example_file, params):
     """
-    Small test for the 2D stress Lbracket example.
+    Small test for the 2D mbb example with orientations of stiffness tensor.
 
     The example is run as a script, writes obj to CSV files in
     tmp_path, and the results are compared against reference CSVs.
@@ -25,11 +25,11 @@ def test_stress_lbracket(tmp_path, example_file, params):
         test_path.parent
         / "examples"
         / "topology_optimization"
-        / "stress_constraint"
+        / "orientation"
         / example_file
     )
     cmd = [sys.executable, str(file_path)] + params.split(" ")
     run(cmd, cwd=tmp_path, shell=False, check=True)
-    obj = loadtxt(tmp_path / "stress_lbracket_obj.csv", delimiter=",")
-    obj_ref = loadtxt(test_path / "test_files" / "stress_lbracket_obj.csv", delimiter=",")
+    obj = loadtxt(tmp_path / "stiffness_rotation_obj.csv", delimiter=",")
+    obj_ref = loadtxt(test_path / "test_files" / "stiffness_rotation_obj.csv", delimiter=",")
     assert_allclose(obj, obj_ref,rtol=1e-6)

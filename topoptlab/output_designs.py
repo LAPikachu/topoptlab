@@ -45,7 +45,8 @@ def export_vtk(filename: str,
                xTilde: Union[None,np.ndarray] = None,
                elem_size: Union[None,float, np.ndarray] = None,
                volfrac: Union[None,float] = None,
-               stress_vm: Union[None,float, np.ndarray] = None) -> None:
+               stress_vm: Union[None,float, np.ndarray] = None,
+               vectors: Union[None,np.ndarray] = None) -> None:
     """
     Export design to a vtk file for visualisation e. g. with Paraview.
 
@@ -83,6 +84,9 @@ def export_vtk(filename: str,
         stored. The default is None.
     stress_vm : np.ndarray, optional
         von Mises stress.
+    vectors : np.ndarray
+        vectors [cos(theta)cos(phi); sin(theta)cos(phi); -sin(phi)] used to show the 
+        orientation arrow field in Paraview.
 
     Returns
     -------
@@ -165,6 +169,8 @@ def export_vtk(filename: str,
         el_data.update({"xThresh": [threshold(xPhys,volfrac)]})
     if stress_vm is not None:
         el_data["stress_vm"] = [np.asarray(stress_vm, dtype=float)]
+    if vectors is not None:
+        el_data["vectors"] = [np.asarray(vectors, dtype=float)]
     #
     if nelz is None:
         Mesh(points,

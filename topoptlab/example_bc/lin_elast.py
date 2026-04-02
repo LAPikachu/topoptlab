@@ -907,12 +907,12 @@ def Lbracket(nelx: int, nely: int,
     f = np.zeros((ndof, 1))
     u = np.zeros((ndof, 1))
     # fix the top edge, when x from 0 to 40
-    xs   = np.arange(0, 41)
+    xs   = np.arange(0, nely//5*2+1)
     xdof = 2 * ((nely+1) * xs)      
     ydof = xdof + 1              
     fixed = np.hstack((xdof,ydof)) 
     # force pushing down at 6 nodes
     x_range = np.arange(nelx - 5, nelx + 1)
-    y_load = 2 * (x_range * (nely + 1) + 60) + 1
+    y_load = 2 * (x_range * (nely + 1) + nely//5*3) + 1
     f[y_load, 0] = -0.5/3
     return u,f,fixed,np.setdiff1d(dofs,fixed),None
