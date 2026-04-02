@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from topoptlab.filter.matrix_filter import assemble_matrix_filter
 from topoptlab.filter.haeviside_projection import find_eta
 # default application case that provides boundary conditions, etc.
-from topoptlab.example_bc.lin_elast import Lbracket
+from topoptlab.example_bc.lin_elast import Lbracket,mbb_2d
 # set up finite element problem
 from topoptlab.fem import create_matrixinds
 from topoptlab.elements.bilinear_quadrilateral import create_edofMat as create_edofMat2d
@@ -28,7 +28,7 @@ from topoptlab.material_interpolation import simp,simp_dx,ramp,ramp_dx
 from topoptlab.fem import assemble_matrix,apply_bc
 from topoptlab.solve_linsystem import solve_lin
 # constrained optimizers
-from topoptlab.optimizer.mma_utils import update_mma,mma_defaultkws,gcmma_defaultkws
+from topoptlab.optimizer.mma_utils import update_mma,mma_defaultkws,gcmma_defaultkws,mmasub
 from topoptlab.objectives import stress_pnorm,compliance
 # output final design to a Paraview readable format
 from topoptlab.output_designs import export_vtk,threshold
@@ -37,21 +37,30 @@ from topoptlab.log_utils import EmptyLogger,init_logging
 
 # MAIN DRIVER
 def main(nelx: int, nely: int, nelz: int | None,
-        volfrac: float, penal: float, rmin: float, ft: int,
-        Emax: float = 1.0, nu: float = 0.3,
-        filter_mode: str = "matrix", lin_solver: str = "cvxopt-cholmod",
+        volfrac: float, 
+        penal: float, 
+        rmin: float, 
+        ft: int,
+        Emax: float = 1.0, 
+        nu: float = 0.3,
+        filter_mode: str = "matrix", 
+        lin_solver: str = "cvxopt-cholmod",
         preconditioner: str | None = None,
-        assembly_mode: str = "full", body_forces_kw: Dict | None = None,
-        bcs: Callable = Lbracket, l: float | np.ndarray = 1.0,
-        obj_func: Callable = stress_pnorm, obj_kw={},         
+        assembly_mode: str = "full", 
+        body_forces_kw: Dict | None = None,
+        bcs: Callable = Lbracket, 
+        l: float | np.ndarray = 1.0,
+        obj_func: Callable = stress_pnorm, 
+        obj_kw={},         
         el_flags: np.ndarray | None = None,
-        optimizer: str = "mma", optimizer_kw: Dict | None = None,
+        optimizer_kw: Dict | None = None,
         Pnorm: float = 10, penal_sig: float = 0.5,
-        use_stress_constraint: bool = False,stress_allow: float = 0.45,
+        use_stress_constraint: bool = False,
+        stress_allow: None | float = 0.45,
         nouteriter: int = 2000, ninneriter: int = 15,
         file: str = "lbracket",
         matinterpol: Callable = simp, matinterpol_dx: Callable = simp_dx,
-        matinterpol_kw: Dict = {"eps": 1e-6, "penal": 3.},
+        matinterpol_kw: Dict = {"eps": 1e-9, "penal": 3.},
         display: bool = False, export: bool = False,
         write_log: bool = False,
         debug: int = 0) -> float:
@@ -61,7 +70,7 @@ def main(nelx: int, nely: int, nelz: int | None,
     Details please refer to: 
     Le, Chau, et al. "Stress-based topology optimization for continua." 
     Structural and Multidisciplinary Optimization 41.4 (2010): 605-620.
-    Parameters
+    One can also use mbb beam to validate the stress constr effect. 
     Parameters
     ----------
     nelx : int
@@ -155,10 +164,29 @@ def main(nelx: int, nely: int, nelz: int | None,
     obj : float
         Final objective value evaluated on the thresholded design.
     """
+    optimizer="mma"
     if nelz is None:
         ndim = 2
+        create_edofMat = create_edofMat2d
+        xe = np.array([[[-1.,-1.],
+                        [1.,-1.],
+                        [1.,1.],
+                        [-1.,1.]]])/2
+        from topoptlab.elements.bilinear_quadrilateral import shape_functions_dxi
     else:
         ndim = 3
+        create_edofMat = create_edofMat3d 
+        xe = np.array([[[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
+                        [-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]])/2  
+        from topoptlab.elements.trilinear_hexahedral import shape_functions_dxi 
+    # total number of design variables/elements
+    n = np.prod(np.array([nelx,nely,nelz])[:ndim])
+    #
+    if isinstance(l,float):
+        l = np.array( [l for i in np.arange(ndim)])
+    #
+    xe = l*xe*np.ones((n,1,1))
+    
     if write_log:
         # check if log file exists and if True delete
         to_log = init_logging(logfile=file)
@@ -183,43 +211,27 @@ def main(nelx: int, nely: int, nelz: int | None,
         to_log(f"filter mode: {filter_mode}")
     else:
         to_log = EmptyLogger()
-    # total number of design variables/elements
-    if ndim == 2:
-        n = nelx * nely
-    elif ndim == 3:
-        n = nelx * nely * nelz
+
     if body_forces_kw is None:
         body_forces_kw = {}
-    if isinstance(l,float):
-        l = np.array( [l for i in np.arange(ndim)])
+
     # Allocate design variables (as array), initialize and allocate sens.
     x = volfrac * np.ones((n,1), dtype=float,order='F')
-    xold = x.copy()
-    xTilde = x.copy()
-    xPhys = x.copy()
-    xBase = x.copy()
+    xold, xPhys, xTilde, xBase = x.copy(), x.copy(), x.copy(), x.copy()
+
+    xi,eeta,zeta = ndim*[np.array([0.])] + int(3-ndim)*[None]
+    B = infini_strain_matrix(xi=xi, 
+                             eta=eeta, 
+                             zeta=zeta, 
+                             xe=xe, 
+                             all_elems=True, 
+                             shape_functions_dxi=shape_functions_dxi)
     if ft == 5:
         beta = 1
         eta = find_eta(eta0=0.5, xTilde=xTilde, beta=beta, volfrac=volfrac)
     else:
         beta = None
     #
-    if ndim == 2:
-        xe = l*np.array([[[-1.,-1.],
-                          [1.,-1.],
-                          [1.,1.],
-                          [-1.,1.]]])/2 * np.ones((n,1,1))
-        xi  = np.array([0.0])
-        etaa = np.array([0.0])
-        B = infini_strain_matrix(xi=xi, eta=etaa, xe=xe, zeta= None, all_elems=True, shape_functions_dxi=shape_functions_dxi)
-    elif ndim == 3:
-        xe = l*np.array([[[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
-                          [-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]])/2 \
-            * np.ones((n,1,1))
-        xi  = np.array([0.0])
-        etaa = np.array([0.0])
-        zeta = np.array([0.0])
-        B = infini_strain_matrix(xi=xi, eta=etaa, zeta=zeta, xe=xe, all_elems=True, shape_functions_dxi=shape_functions_dxi)
     if ndim ==2:
         # stiffness tensor
         cs = [isotropic_2d(E=Emax, nu=nu) \
@@ -239,21 +251,15 @@ def main(nelx: int, nely: int, nelz: int | None,
 
     if optimizer == "mma":
         # mma needs results of the two previous iterations
-        nhistory = 2            
+        nhistory = 3            
         # n variables: x only
         xhist = [x.copy(), x.copy()]
         nvars = n
-        optimizer_kw = mma_defaultkws(nvars, ft=ft, n_constr=n_constr)
-        optimizer_kw["xmin"] = np.zeros(nvars)
-        optimizer_kw["xmax"] = np.ones(nvars)
-        optimizer_kw["low"]  = np.ones(nvars)
-        optimizer_kw["upp"]  = np.ones(nvars)           
+        optimizer_kw = mma_defaultkws(nvars, ft=ft, n_constr=n_constr) 
         if ft == 5:
             optimizer_kw["move"] = 0.05
-    else:
-        raise ValueError("Unknown optimizer: ", optimizer)
     # handle element element flags
-    if el_flags is not None and optimizer in ["mma","gcmma"]:
+    if el_flags is not None:
         # passive
         mask = el_flags == 1
         optimizer_kw["xmin"][:n][mask] = 0.
@@ -267,28 +273,39 @@ def main(nelx: int, nely: int, nelz: int | None,
         x[mask] = 1.
         xPhys[mask] = 1.
     # get element matrices
+    KE  = np.zeros((n, ndim*2**ndim, ndim*2**ndim), 
+                   dtype=float)
     if ndim == 2:
-        KE  = np.zeros((n, 8, 8), dtype=float)
         for e in np.arange(n):
-            KE[e, :, :] = lk_linear_elast_aniso_2d(c=cs[e, :, :], l=l,g=np.array([0.]),t=1.0)
-        # infer nodal degrees of freedom assuming that we have 4/8 nodes in 2/3 dimension
-        n_ndof = int(KE.shape[-1]/4)
-        # number of degrees of freedom
-        ndof = (nelx+1)*(nely+1)*n_ndof
-        # element degree of freedom matrix plus some helper indices
-        edofMat, n1, n2, n3, n4 = create_edofMat2d(nelx=nelx,nely=nely,
-                                                   nnode_dof=n_ndof)
+            KE[e, :, :] = lk_linear_elast_aniso_2d(c=cs[e, :, :], 
+                                                   l=l,
+                                                   g=np.array([0.]),
+                                                   t=1.0)
     elif ndim == 3:
-        KE  = np.zeros((n, 24, 24), dtype=float)
         for e in np.arange(n):
             KE[e, :, :] = lk_linear_elast_aniso_3d(c=cs[e, :, :], l=l,g=np.array([0.,0.]))
-        # infer nodal degrees of freedom assuming that we have 4/8 nodes in 2/3
-        n_ndof = int(KE.shape[-1]/8)
-        # number of degrees of freedom
-        ndof = (nelx+1)*(nely+1)*(nelz+1)*n_ndof
-        # element degree of freedom matrix plus some helper indices
-        edofMat, n1, n2, n3, n4 = create_edofMat3d(nelx=nelx,nely=nely,nelz=nelz,
-                                                   nnode_dof=n_ndof)
+    # infer nodal degrees of freedom assuming that we have 4/8 nodes in 2/3
+    n_ndof = int(KE.shape[-1]/2**ndim)
+    # number of degrees of freedom
+    ndof = (nelx+1)*(nely+1)*n_ndof
+    # element degree of freedom matrix plus some helper indices
+    edofMat, n1, n2, n3, n4 = create_edofMat(nelx=nelx,
+                                             nely=nely,
+                                             nelz=nelz,
+                                             nnode_dof=n_ndof)
+    # Construct the index pointers for the coo format
+    iK,jK = create_matrixinds(edofMat=edofMat,
+                              mode="full")
+    # Filter: Build (and assemble) the index+data vectors for the coo matrix format
+    if filter_mode == "matrix":
+        H,Hs = assemble_matrix_filter(nelx=nelx,
+                                      nely=nely,
+                                      nelz=nelz,
+                                      rmin=rmin,
+                                      ndim=ndim)
+    else:
+        raise ValueError("this tutorial only permits filter_mode 'matrix'.")
+
     # fetch body forces
     if "density_coupled" in body_forces_kw:
         # fetch functions to create body force
@@ -299,18 +316,10 @@ def main(nelx: int, nely: int, nelz: int | None,
         fe_dens = lf(b=body_forces_kw["density_coupled"],l=l)
     else:
         fe_dens = None
-    #
-    if len([key for key in body_forces_kw.keys() \
-            if key not in ["density_coupled","strain_uniform"]]):
-        raise NotImplementedError("One type of bodyforce/source has not yet been implemented.")
-    # Construct the index pointers for the coo format
-    iK,jK = create_matrixinds(edofMat=edofMat,mode=assembly_mode)
-    # Filter: Build (and assemble) the index+data vectors for the coo matrix format
-    if filter_mode == "matrix":
-        H,Hs = assemble_matrix_filter(nelx=nelx,nely=nely,nelz=nelz,
-                                      rmin=rmin,ndim=ndim)
     # BC's and support
-    u,f,fixed,free,springs = bcs(nelx=nelx,nely=nely,nelz=nelz,
+    u,f,fixed,free,springs = bcs(nelx=nelx, 
+                                 nely=nely,
+                                 nelz=nelz,
                                  ndof=ndof)
     if display:
         # Initialize plot and plot the initial design
@@ -360,7 +369,7 @@ def main(nelx: int, nely: int, nelz: int | None,
         K = apply_bc(K=K,solver=lin_solver,
                         free=free,fixed=fixed)
         # solve linear system. fact is a factorization and precond a preconditioner
-        u[free, :], fact, precond = solve_lin(K=K, rhs=rhs[free],
+        u[free, :], fact, precond = solve_lin(K=K, rhs=rhs[free],rhs0=u[free,:],
                                                 solver=lin_solver,
                                                 preconditioner=preconditioner)     
         # Objective and objective gradient
@@ -383,9 +392,8 @@ def main(nelx: int, nely: int, nelz: int | None,
             # if problem not self adjoint, solve for adjoint variables and
             # calculate derivatives, else use analytical solution
             if self_adj:
-                #dobj[:] += rhs_adj
                 lamU = np.zeros(f.shape)
-                lamU[free] = rhs_adj[free]
+                lamU[free,i] = rhs_adj[free,i]
             else:
                 lamU = np.zeros(f.shape)
                 lamU[free],_,_ = solve_lin(K, rhs=rhs_adj[free],
@@ -474,13 +482,12 @@ def main(nelx: int, nely: int, nelz: int | None,
     
         # Build constraint values 
         constr_list = []
-        vol_up = xPhys.mean() - volfrac - 1e-5
+        vol_up = xPhys.mean() - volfrac
         vol_lo = volfrac - xPhys.mean() - 1e-5
-        constr_list.extend([vol_up,vol_lo])
+        constr_list.extend([vol_up, vol_lo])
         if use_stress_constraint:
             constr_list.append(float(constr_stress))
-        constrs = np.asarray(constr_list, dtype=float).ravel()
-
+        constrs = np.asarray(constr_list, dtype=float).reshape(-1, 1)
         dconstr = np.zeros((n, n_constr), dtype=float)
         col = 0
         dconstr[:n, col] =  1.0 / n; col += 1      # vol upper
@@ -488,15 +495,13 @@ def main(nelx: int, nely: int, nelz: int | None,
         if use_stress_constraint:
             dconstr[:n, col] = dconstr_stress_dx[:, 0]
             col += 1
-        # Sensitivity filtering:
-        if ft == 0 and filter_mode == "matrix":
-            dobj[:] = np.asarray(H@(x*dobj) /
-                                 Hs) / np.maximum(0.001, x)
-            #dobj[:] = H @ (dc*x) / Hs / np.maximum(0.001, x)
-        elif ft == 1 and filter_mode == "matrix":
+        #
+        if ft == 1 and filter_mode == "matrix":
             dobj[:] = np.asarray(H*(dobj/Hs))
-            for j in range(col):
-                dconstr[:n, j] = np.asarray(H*((dconstr[:n, j])[:, None] / Hs))[:, 0]
+            # dconstr[:n,:] = np.asarray(H*(dconstr[:n,:]/Hs))
+            dconstr[:] = np.asarray(H*(dconstr/Hs))
+            # for j in range(dconstr.shape[-1]):
+            #     dconstr[:nel, j] = np.asarray(H*((dconstr[:nel, j])[:, None] / Hs))[:, 0]
         elif ft == 5:
             xTilde[:] = np.asarray(H * x/ Hs)
             xBase[:] = xTilde.copy()
@@ -504,7 +509,7 @@ def main(nelx: int, nely: int, nelz: int | None,
                     (np.tanh(beta*eta)+np.tanh(beta*(1-eta)))   
             dobj[:] = dobj * dx   # dJ/d(xP_input)
             dobj[:] = np.asarray(H * (dobj / Hs))
-            for j in range(col):
+            for j in range(dconstr.shape[-1]):
                 dconstr[:n, j] = dconstr[:n, j] * dx[:, 0]  # dgj/d(xBase)
                 dconstr[:n, j] = np.asarray(H * ((dconstr[:n, j])[:, None] / Hs))[:, 0]
         elif ft == -1:
@@ -520,32 +525,30 @@ def main(nelx: int, nely: int, nelz: int | None,
         # method of moving asymptotes
         if optimizer == "mma":
             nvars = n
-            xold1  = np.asarray(xhist[-1], dtype=float).reshape(nvars, 1)  
-            xold2  = np.asarray(xhist[-2], dtype=float).reshape(nvars, 1)  
-            for j in ("xmin", "xmax", "low", "upp"):
-                optimizer_kw[j] = np.asarray(optimizer_kw[j], dtype=float).reshape(nvars, 1)  
-            xmma, ymma, zmma, lam, xsi, eta_mma, mu, zet, s, low, upp = update_mma(
-                x=np.asarray(x, dtype=float).ravel(), xold1=xold1, xold2=xold2, 
-                xPhys=np.asarray(x, dtype=float).ravel(),
-                obj=np.asarray(obj, dtype=float), dobj=np.asarray(dobj, dtype=float).ravel(),
-                constrs=constrs,
-                dconstr=np.asarray(dconstr, dtype=float),
-                iteration=loop, **optimizer_kw
-            )
+            xmma,ymma,zmma,lam,xsi,eta_mma,mu,zet,s,low,upp = mmasub(m=optimizer_kw["nconstr"],
+                                                                 n=nvars,
+                                                                 iter=loop,
+                                                                 xval=x,
+                                                                 xold1=xhist[-1],
+                                                                 xold2=xhist[-2],
+                                                                 f0val=obj,
+                                                                 df0dx=dobj,
+                                                                 fval=constrs,
+                                                                 dfdx=dconstr.T,
+                                                                 **optimizer_kw)
+
             x[:] = np.asarray(xmma, dtype=float).reshape(nvars, 1) 
             xhist.pop(0); xhist.append(x.copy())
             optimizer_kw["low"] = low; optimizer_kw["upp"] = upp
+            if len(xhist)> nhistory+1:
+                xhist = xhist[-nhistory-1:]
             # print(f"fval: {constrs}, max_violation: {np.maximum(constrs,0).max():.3e}")    
         if debug:
             print("Post Density Update: it.: {0}, med. x.: {1:.10f}, med. xTilde: {2:.10f}, med. xPhys: {3:.10f}".format(
                    loop, np.median(x),np.median(xTilde),np.median(xPhys)))
         # Filter design variables
-        if ft == 0:
-            xPhys[:] = x
-        elif ft == 1 and filter_mode == "matrix":
-            xTilde[:] = np.asarray(H*x/Hs)
-            xPhys[:] = xTilde         
-            #xPhys[:] = H @ x / Hs
+        if ft == 1 and filter_mode == "matrix":
+            xPhys[:] = np.asarray(H*x/Hs)      
         elif ft in [5] and filter_mode == "matrix":
             xTilde[:] = np.asarray(H*x/Hs)
             xBase = xTilde.copy()
@@ -559,7 +562,7 @@ def main(nelx: int, nely: int, nelz: int | None,
                    loop, np.median(x),np.median(xTilde),np.median(xPhys)))
         
         # Compute the change by the inf. norm
-        change = np.abs(xPhys-xPhysold).max()
+        change = np.abs(xhist[-1][:, [0]] - xhist[-2][:, [0]]).max()
         export_every = 100
         if export and ((loop + 1) % export_every == 0):
             export_vtk(
@@ -581,7 +584,7 @@ def main(nelx: int, nely: int, nelz: int | None,
             to_log("it.: {0} obj.: {1:.10f} vol.: {2:.10f} ch: {3:.10f}".format(
                          loop+1, obj, xPhys.mean(), change))
         # convergence check
-        if change < 0.01 and beta is None and loop >500:
+        if change < 0.01 and beta is None and loop >200:
             break
         # parameter continuation for beta in volume projection
         elif (ft == 5) and (beta < 256) and \
@@ -668,11 +671,11 @@ if __name__ == "__main__":
     #sketch(save=True)
     # Default input parameters
     nelx=100
-    nely=nelx
+    nely=100
     nelz=None
     volfrac=0.3
-    rmin=0.05*nelx
-    penal=3
+    rmin=5.0
+    penal=3.
     ft=1 
     elem_size=1.0
     nouteriter=2000
@@ -696,7 +699,6 @@ if __name__ == "__main__":
         bcs=Lbracket
     else:
         raise ValueError("Only for 2D validation")
-    # assume nelx = nely = 100
     el_flags = np.zeros(nelx*nely, dtype=np.int32)
     xs = np.arange(41, nelx, dtype=int)   
     ys = np.arange(0, 60, dtype=int)   
@@ -705,11 +707,11 @@ if __name__ == "__main__":
 
     obj = main(nelx=nelx,nely=nely,nelz=nelz,volfrac=volfrac,penal=penal,rmin=rmin,ft=ft,
          obj_func=compliance,
-        #  body_forces_kw={"density_coupled": np.array([0,-1e-7])},
+         body_forces_kw={"density_coupled": np.array([0,-1e-7])},
          el_flags = el_flags,
          display=display,
          bcs=bcs,
-         file='aLbracket',
+         file='Lbracket',
          nouteriter=nouteriter,
          use_stress_constraint=use_stress_constraint,
          export=export,write_log=write_log)
