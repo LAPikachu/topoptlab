@@ -10,14 +10,14 @@ import sys
 @pytest.mark.parametrize(
     "example_file, params",
     [
-        ("Lbracket.py", "100 100 0.3 5.0 3 1 3 0 0 0"),
+        ("Lbracket.py", "30 10 0.5 .8 3 1 20 0 0 0"),
     ],
 )
 def test_stress_lbracket(tmp_path, example_file, params):
     """
     Small test for the 2D stress Lbracket example.
 
-    The example is run as a script, writes u_bw and rhs_adj to CSV files in
+    The example is run as a script, writes obj to CSV files in
     tmp_path, and the results are compared against reference CSVs.
     """
     test_path = Path(__file__).resolve().parent
@@ -32,4 +32,4 @@ def test_stress_lbracket(tmp_path, example_file, params):
     run(cmd, cwd=tmp_path, shell=False, check=True)
     obj = loadtxt(tmp_path / "stress_lbracket_obj.csv", delimiter=",")
     obj_ref = loadtxt(test_path / "test_files" / "stress_lbracket_obj.csv", delimiter=",")
-    assert_allclose(obj, obj_ref,rtol=1e-4)
+    assert_allclose(obj, obj_ref,rtol=1e-6)

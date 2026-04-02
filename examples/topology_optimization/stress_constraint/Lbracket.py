@@ -700,8 +700,8 @@ if __name__ == "__main__":
     else:
         raise ValueError("Only for 2D validation")
     el_flags = np.zeros(nelx*nely, dtype=np.int32)
-    xs = np.arange(41, nelx, dtype=int)   
-    ys = np.arange(0, 60, dtype=int)   
+    xs = np.arange(nelx//5*2+1, nelx, dtype=int)   
+    ys = np.arange(0, nely//5*3, dtype=int)   
     idx = (xs[:, None] * nely+ ys[None, :]).astype(int).ravel()
     el_flags[idx] = 1
 
