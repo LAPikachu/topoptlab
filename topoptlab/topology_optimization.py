@@ -591,7 +591,7 @@ def main(nelx: int, nely: int,
         elif optimizer=="mma":
             xmma,ymma,zmma,lam,xsi,eta_mma,mu,zet,s,low,upp = mmasub(m=optimizer_kw["nconstr"],
                                                                  n=x.shape[0],
-                                                                 iter=i,
+                                                                 iter=loop,
                                                                  xval=x,
                                                                  xold1=xhist[-1],
                                                                  xold2=xhist[-2],
