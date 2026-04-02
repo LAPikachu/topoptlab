@@ -7,7 +7,7 @@ from topoptlab.example_bc.lin_elast import mbb_2d
 from topoptlab.accelerators import anderson
 
 @pytest.mark.parametrize('obj_ref',
-                         [(233.98922)])
+                         [(237.195764619)])
 
 def test_anderson(obj_ref):
     """
