@@ -4,6 +4,7 @@ from topoptlab.example_bc.lin_elast import mbb_2d
 from topoptlab.accelerators import anderson
 from topoptlab.filter.filter import TOFilter 
 from topoptlab.filter.density_filter import DensityFilter
+from topoptlab.filter.sensitivity_filter import SensitivityFilter
 import numpy as np
 
 if __name__ == "__main__":
@@ -13,7 +14,7 @@ if __name__ == "__main__":
     volfrac = 0.5
     rmin = 2.4  # 5.4
     penal = 3.0
-    ft = 1 # ft==0 -> sens, ft==1 -> dens
+    ft = 0#SensitivityFilter # ft==0 -> sens, ft==1 -> dens
     display = True
     export = False
     #

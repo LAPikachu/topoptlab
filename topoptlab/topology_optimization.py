@@ -217,8 +217,6 @@ def main(nelx: int, nely: int,
         lk = lk_linear_elast_3d
     # Allocate design variables (as array), initialize and allocate sens.
     x = volfrac * np.ones( (n,1), dtype=float,order='F')
-    #x = np.random.rand(n)
-    #x = x/x.mean() * volfrac
     xPhys = x.copy()
     # intermediate filter variables
     if isinstance(ft, list):
@@ -534,16 +532,21 @@ def main(nelx: int, nely: int,
                   np.min(dconstrs)))
         # sensitivity filtering
         if isinstance(ft, list):
-            dobj[:] = ft[-1].apply_filter_dx(x_filtered=xPhys,
+            dobj[:] = ft[-1].apply_filter_dx(x=x if len(ft)==1 else xTilde[-1],
+                                             x_filtered=xPhys,
                                              dx_filtered=dobj)
-            dconstrs[:] = ft[-1].apply_filter_dx(x_filtered=xPhys,
-                                                 dx_filtered=dconstrs)
+            if np.any(ft[-1].constraint_filter_mask):
+                dconstrs[:,ft[-1].constraint_filter_mask] = \
+                     ft[-1].apply_filter_dx(x=x if len(ft)==1 else xTilde[-1], 
+                                            x_filtered=xPhys,
+                                            dx_filtered=dconstrs)
             if len(ft) > 1:
                 for i in range(len(ft)-2,-1,-1):
-                    dobj[:] = ft[-1].apply_filter_dx(x_filtered=xTilde[i],
+                    dobj[:] = ft[i].apply_filter_dx(x_filtered=xTilde[i],
                                                      dx_filtered=dobj)
-                    dconstrs[:] = ft[-1].apply_filter_dx(x_filtered=xTilde[i],
-                                                         dx_filtered=dconstrs)
+                    if np.any(ft[i].constraint_filter_mask):
+                        dconstrs[:] = ft[i].apply_filter_dx(x_filtered=xTilde[i],
+                                                            dx_filtered=dconstrs)
         elif ft == 0 and filter_mode == "matrix":
             dobj[:] = np.asarray(H@(x*dobj) /
                                  Hs) / np.maximum(0.001, x)

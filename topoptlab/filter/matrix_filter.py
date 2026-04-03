@@ -53,7 +53,8 @@ class MatrixFilter(TOFilter):
                                                  rmin=rmin, 
                                                  pbc=pbc)
         
-    def apply_filter(self, x: np.ndarray, 
+    def apply_filter(self, 
+                     x: np.ndarray, 
                      **kwargs: Any) -> np.ndarray:
         """
         Apply filter to the (intermediate) design variables x:
@@ -89,8 +90,6 @@ class MatrixFilter(TOFilter):
         
         Parameters
         ----------
-        x_filtered : np.ndarray
-            filtered design variables.
         dx_filtered : np.ndarray
             sensitivities with respect to filtered design variables.
             
@@ -117,7 +116,8 @@ class MatrixFilter(TOFilter):
         """
         return False
     
-def assemble_matrix_filter(nelx: int, nely: int, 
+def assemble_matrix_filter(nelx: int, 
+                           nely: int, 
                            rmin: Union[float,List,np.ndarray],
                            nelz: Union[int, None] = None,
                            pbc: Union[bool,List,np.ndarray] = False,

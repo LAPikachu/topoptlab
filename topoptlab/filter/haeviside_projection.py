@@ -149,7 +149,7 @@ def eta_projection_dx(eta: float,
         first derivative of projected densities.
 
     """
-    return beta * (1 - np.tanh(beta * (x_filtered - eta))**2) /\
+    return beta * (1 - np.tanh(beta * (xTilde - eta))**2) /\
                   (np.tanh(beta*eta)+np.tanh(beta*(1-eta))) 
 
 def eta_projection_deta(eta: float, 
@@ -239,7 +239,7 @@ def find_multieta(etas0: Union[float,np.ndarray],
         # root_scalar needs f to change sign between the respective ends of the
         # brackets, therefor the eta found by this function is offset by -1/2 to the value later used
         result = root_scalar(f=func,
-                             x0=eta0-1/2,
+                             x0=etas0-1/2,
                              args=(xTilde,
                                    beta,
                                    weights,
@@ -380,7 +380,7 @@ def multieta_projection_dx(etas: np.ndarray,
         first derivative of projected densities.
 
     """
-    xProj_dx = beta * (1 - np.tanh(beta * (x_filtered - eta[None,...]))**2) /\
+    xProj_dx = beta * (1 - np.tanh(beta * (xTilde - eta[None,...]))**2) /\
                       (np.tanh(beta*eta[None,...])+np.tanh(beta*(1-eta[None,...])))
     
     if weights is None:
@@ -425,12 +425,6 @@ def multieta_projection_deta(etas: np.ndarray,
                np.tanh(beta * (xTilde[...,None] - etas[None,...]))) /\
               (np.tanh(beta * etas[None,...]) +\
                np.tanh(beta * (1 - etas[None,...])))
-    # 
-    dxProj_n = beta * ( 
-                (1 - xProj_n) * np.cosh(beta * etas[None,...])**(-2) -
-                 np.cosh(beta * (xTilde[...,None] - etas[None,...]))**(-2) +
-                 xProj_n * np.cosh(beta * (1 - etas[None,...]))**(-2)) \
-                 / (np.tanh(beta * etas) + np.tanh(beta * (1 - etas)))[None,...]
     # 
     return beta * weights[None,...] * ( 
             (1 - xProj_n) * np.cosh(beta * etas[None,...])**(-2) -

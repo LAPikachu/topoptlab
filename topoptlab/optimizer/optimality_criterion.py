@@ -1,22 +1,278 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from typing import Union, Tuple
+from typing import Any, List, Tuple, Union
 
 import numpy as np
+from scipy.sparse import spdiags, sparray
 
 projections = [2,3,4,5]
 filters = [0,1]
+
+def oc_model(x: np.ndarray,
+             x0: np.ndarray, 
+             f0: Union[float,np.ndarray], 
+             dfdx : np.ndarray) -> Union[float, np.ndarray]:
+    """
+    Evaluate the optimality-criteria (OC) surrogate of ``f`` at ``x``.
+
+    The surrogate is constructed by expanding ``f`` at the current iterate
+    ``x0`` using the OC convex separable approximation: components with 
+    ``dfdx<0`` sensitivities are linearized in ``x**(-1)`` while all others are 
+    linearized in ``x``.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Evaluation point for the surrogate. Shape ``(n,)`` for a single
+        function or ``(n, m)`` for ``m`` functions evaluated in parallel.
+    x0 : np.ndarray
+        Expansion point, typically the current design iterate. Must have the
+        same shape as ``x``.
+    f0 : float or np.ndarray
+        Value of the original function at ``x0``. Use a scalar for a single
+        function or an array of shape ``(m,)`` for multiple functions.
+    dfdx : np.ndarray
+        Sensitivity of ``f`` with respect to ``x``, evaluated at ``x0``.
+        Must have the same shape as ``x``.
+
+    Returns
+    -------
+    f_surrogate : float or np.ndarray
+        Surrogate value at ``x``. Returns a scalar for 1D inputs and an array
+        of shape ``(m,)`` for 2D inputs.
+
+    """
+    return f0 + np.where(dfdx<0,
+                         -dfdx*(1/x - 1/x0)*x0**2, 
+                         dfdx*(x-x0)).sum(axis=0)
+
+def oc_model_dx(x: np.ndarray,
+                x0: np.ndarray, 
+                dfdx : np.ndarray) -> np.ndarray:
+    """
+    Evaluate the first derivative / jacobian of the optimality-criteria (OC) 
+    surrogate of ``f`` at ``x``.
+
+    The surrogate is constructed by expanding ``f`` at the current iterate
+    ``x0`` using the OC convex separable approximation: components with 
+    ``dfdx<0`` sensitivities are linearized in ``x**(-1)`` while all others are 
+    linearized in ``x``.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Evaluation point for the surrogate. Shape ``(n,)`` for a single
+        function or ``(n, m)`` for ``m`` functions evaluated in parallel.
+    x0 : np.ndarray
+        Expansion point, typically the current design iterate. Must have the
+        same shape as ``x``.
+    dfdx : np.ndarray
+        Sensitivity of ``f`` with respect to ``x``, evaluated at ``x0``.
+        Must have the same shape as ``x``.
+
+    Returns
+    -------
+    f_surrogate_dx : np.ndarray
+        First derivative of the surrogate at ``x`` of shape ``(n)`` or 
+        ``(n,m)``.
+
+    """
+    return np.where(dfdx<0,
+                    dfdx*(x0/x)**2, 
+                    dfdx)
+
+def oc_model_dx2(x: np.ndarray,
+                x0: np.ndarray, 
+                dfdx : np.ndarray, 
+                return_diagonal : bool = True) -> Union[np.ndarray,
+                                                        List[sparray]]:
+    """
+    Evaluate the second derivative / hessian of the optimality-criteria (OC) 
+    surrogate of ``f`` at ``x``.
+
+    The surrogate is constructed by expanding ``f`` at the current iterate
+    ``x0`` using the OC convex separable approximation: components with 
+    ``dfdx<0`` sensitivities are linearized in ``x**(-1)`` while all others are 
+    linearized in ``x``.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Evaluation point for the surrogate. Shape ``(n,)`` for a single
+        function or ``(n, m)`` for ``m`` functions evaluated in parallel.
+    x0 : np.ndarray
+        Expansion point, typically the current design iterate. Must have the
+        same shape as ``x``.
+    dfdx : np.ndarray
+        Sensitivity of ``f`` with respect to ``x``, evaluated at ``x0``.
+        Must have the same shape as ``x``.
+    return_diagonal : bool
+        if True, only the diagonals are returned.
+
+    Returns
+    -------
+    f_surrogate_dx2 : list or np.ndarray
+        list of sparse hessians of the surrogate at ``x`` of shape ``(n,n)`` or 
+        ``(n,n,m)`` or just the diagonals of shape ``(n)`` or ``(n,m)``.
+
+    """
+    diag = np.where(dfdx<0,
+                    -2.*dfdx*(x0/x)**2 / x, 
+                     0.)
+    if return_diagonal:
+        return diag
+    elif x.dim == 1:
+        return [spdiags(data=diag, 
+                        k=0, format="dia")]
+    elif x == 2.:
+        return [spdiags(data=diag, k=0, format="dia") \
+                for i in range(x.shape[1])]
+    else:
+        raise ValueError("x must have shape (n,) or (n, m)")
+           
+def ocgeneralized_model(x: np.ndarray,
+                        x0: np.ndarray, 
+                        f0: Union[float,np.ndarray], 
+                        dfdx : np.ndarray, 
+                        damp: float) -> Union[float, np.ndarray]:
+    """
+    Evaluate the generalized  optimality-criteria (OC) surrogate of ``f`` at 
+    ``x``.
+
+    The surrogate is constructed by expanding ``f`` at the current iterate
+    ``x0`` using the OC generalized convex separable approximation: components 
+    with ``dfdx<0`` sensitivities are linearized in ``x**(-damp)`` while all 
+    others are linearized in ``x``.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Evaluation point for the surrogate. Shape ``(n,)`` for a single
+        function or ``(n, m)`` for ``m`` functions evaluated in parallel.
+    x0 : np.ndarray
+        Expansion point, typically the current design iterate. Must have the
+        same shape as ``x``.
+    f0 : float or np.ndarray
+        Value of the original function at ``x0``. Use a scalar for a single
+        function or an array of shape ``(m,)`` for multiple functions.
+    dfdx : np.ndarray
+        Sensitivity of ``f`` with respect to ``x``, evaluated at ``x0``.
+        Must have the same shape as ``x``.
+    damp : float 
+        exponent commonly referred as damping exponent.
+
+    Returns
+    -------
+    f_surrogate: float or np.ndarray
+        Surrogate value at ``x``. Returns a scalar for 1D inputs and an array
+        of shape ``(m,)`` for 2D inputs.
+
+    """
+    return f0 + np.where(dfdx<0,
+                         -dfdx*( x**(-damp) - x0**(-damp) )*x0**(1+damp) / damp, 
+                         dfdx*(x-x0)).sum(axis=0)
+
+def ocgeneralized_model_dx(x: np.ndarray,
+                           x0: np.ndarray, 
+                           dfdx : np.ndarray, 
+                           damp : float) -> np.ndarray:
+    """
+    Evaluate the first derivative / jacobian of the generalized 
+    optimality-criteria (OC) surrogate of ``f`` at ``x``.
+
+    The surrogate is constructed by expanding ``f`` at the current iterate
+    ``x0`` using the generalized OC convex separable approximation: components 
+    with ``dfdx<0`` sensitivities are linearized in ``x**(-damp)`` while all 
+    others are linearized in ``x``.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Evaluation point for the surrogate. Shape ``(n,)`` for a single
+        function or ``(n, m)`` for ``m`` functions evaluated in parallel.
+    x0 : np.ndarray
+        Expansion point, typically the current design iterate. Must have the
+        same shape as ``x``.
+    dfdx : np.ndarray
+        Sensitivity of ``f`` with respect to ``x``, evaluated at ``x0``.
+        Must have the same shape as ``x``.
+    damp : float 
+        exponent commonly referred as damping exponent.
+
+    Returns
+    -------
+    f_surrogate_dx : np.ndarray
+        First derivative of the surrogate at ``x`` of shape ``(n)`` or 
+        ``(n,m)``.
+
+    """
+    return np.where(dfdx<0,
+                    damp*dfdx*(x0/x)**(damp+1.), 
+                    dfdx)
+
+def ocgeneralized_model_dx2(x : np.ndarray,
+                            x0 : np.ndarray, 
+                            dfdx : np.ndarray,
+                            damp : float,
+                            return_diagonal : bool = True) -> Union[np.ndarray,
+                                                                  List[sparray]]:
+    """
+    Evaluate the second derivative / hessian of the optimality-criteria (OC) 
+    surrogate of ``f`` at ``x``.
+
+    The surrogate is constructed by expanding ``f`` at the current iterate
+    ``x0`` using the OC convex separable approximation: components with 
+    ``dfdx<0`` sensitivities are linearized in ``x**(-1)`` while all others are 
+    linearized in ``x``.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Evaluation point for the surrogate. Shape ``(n,)`` for a single
+        function or ``(n, m)`` for ``m`` functions evaluated in parallel.
+    x0 : np.ndarray
+        Expansion point, typically the current design iterate. Must have the
+        same shape as ``x``.
+    dfdx : np.ndarray
+        Sensitivity of ``f`` with respect to ``x``, evaluated at ``x0``.
+        Must have the same shape as ``x``.
+    damp : float 
+        exponent commonly referred as damping exponent.
+    return_diagonal : bool
+        if True, only the diagonals are returned.
+
+    Returns
+    -------
+    f_surrogate_dx2 : list or np.ndarray
+        list of sparse hessians of the surrogate at ``x`` of shape ``(n,n)`` or 
+        ``(n,n,m)`` or just the diagonals of shape ``(n)`` or ``(n,m)``.
+
+    """
+    diag = np.where(dfdx<0,
+                    -damp*(damp+1)*dfdx*(x0/x)**(damp+1.) / x, 
+                     0.)
+    if return_diagonal:
+        return diag
+    elif x.dim == 1:
+        return [spdiags(data=diag, 
+                        k=0, format="dia")]
+    elif x == 2.:
+        return [spdiags(data=diag, k=0, format="dia") \
+                for i in range(x.shape[1])]
+    else:
+        raise ValueError("x must have shape (n,) or (n, m)")
 
 def oc_top88(x: np.ndarray, volfrac: float, 
              dc: np.ndarray, dv: np.ndarray, 
              g: float,
              el_flags: Union[None,np.ndarray],
-             move: int = 0.2, 
-             l1: float = 0.,l2: float = 1e9) -> Tuple[np.ndarray,float]:
+             move: float = 0.2,
+             l1: float = 0.,
+             l2: float = 1e9) -> Tuple[np.ndarray,float]:
     """
-    Optimality criteria method (section 2.2 in top88 paper) for maximum/minimum 
-    stiffness/compliance. Heuristic updating scheme for the element densities 
-    to find the Lagrangian multiplier. Overtaken and adapted from the 
-    
+    Optimality criteria method (section 2.2 in top88 paper) for maximum/minimum
+    stiffness/compliance. Heuristic updating scheme for the element densities
+    to find the Lagrangian multiplier. Overtaken and adapted from the
+
     165 LINE TOPOLOGY OPTIMIZATION CODE BY NIELS AAGE AND VILLADS EGEDE JOHANSEN
     
     Only sufficient for pure sensitivity/density filter optionally with 
@@ -78,9 +334,20 @@ def oc_top88(x: np.ndarray, volfrac: float,
         
     return (xnew, gt)
 
-def oc_haevi(x, volfrac, dc, dv, g, pass_el,
-             H,Hs,beta,eta,ft,
-             debug=False):
+def oc_haevi(x: np.ndarray,
+             volfrac: float,
+             dc: np.ndarray,
+             dv: np.ndarray,
+             g: float,
+             pass_el: Union[None, np.ndarray],
+             H: Any,
+             Hs: np.ndarray,
+             beta: Union[None, float],
+             eta: float,
+             ft: Union[None, int],
+             debug: Union[bool, int] = False,
+             ) -> Union[Tuple[np.ndarray, float],
+                        Tuple[np.ndarray, np.ndarray, np.ndarray, float]]:
     """
     Optimality criteria method (section 2.2 in top88 paper) for maximum/minimum 
     stiffness/compliance. Heuristic updating scheme for the element densities 

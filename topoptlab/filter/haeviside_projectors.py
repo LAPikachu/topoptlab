@@ -4,7 +4,7 @@ from typing import Any, Union
 import numpy as np
 
 from topoptlab.filter.filter import TOFilter
-from topoptlab.filter.haeviside_projection import find_eta
+from topoptlab.filter.haeviside_projection import find_eta, eta_projection, eta_projection_dx
 
 class HaevisideProjectorGuest2004(TOFilter):
     """
@@ -292,11 +292,12 @@ class EtaProjectorXu2010(TOFilter):
                            beta = beta, 
                            volfrac = volfrac,
                            root_args = root_args)
-        return (np.tanh(beta*eta)+np.tanh(beta * (x - eta)))/\
-                (np.tanh(beta*eta)+np.tanh(beta*(1-eta)))
+        return eta_projection(eta=eta, 
+                              xTilde=x, 
+                              beta=beta)
     
     def apply_filter_dx(self, 
-                        x_filtered : np.ndarray, 
+                        x_unfiltered : np.ndarray, 
                         beta : float,
                         eta : float,
                         **kwargs: Any) -> np.ndarray:
@@ -314,8 +315,8 @@ class EtaProjectorXu2010(TOFilter):
         
         Parameters
         ----------
-        x_filtered : np.ndarray
-            filtered design variables.
+        x_unfiltered : np.ndarray
+            unfiltered design variables.
         beta : float
             projection strength.
         eta : float
@@ -326,8 +327,9 @@ class EtaProjectorXu2010(TOFilter):
         dx : np.ndarray
             design sensitivities with respect to un-filtered design variables.
         """
-        return beta * (1 - np.tanh(beta * (x_filtered - eta))**2) /\
-                      (np.tanh(beta*eta)+np.tanh(beta*(1-eta)))
+        return eta_projection(eta=eta, 
+                              xTilde=x_unfiltered, 
+                              beta=beta)
     
     @property
     def vol_conserv(self) -> bool:
@@ -345,4 +347,3 @@ class EtaProjectorXu2010(TOFilter):
             True if filter is volume conserving.
         """
         return self._vol_conserv
-    

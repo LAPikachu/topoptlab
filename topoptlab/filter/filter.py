@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from typing import Any
+from typing import Any, Union
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -47,6 +47,7 @@ class TOFilter(ABC):
     
     @abstractmethod
     def apply_filter_dx(self, 
+                        x : np.ndarray,
                         x_filtered : np.ndarray, 
                         dx_filtered : np.ndarray,
                         **kwargs: Any) -> np.ndarray:
@@ -63,8 +64,10 @@ class TOFilter(ABC):
         
         Parameters
         ----------
+        x : np.ndarray
+            unfiltered variables.
         x_filtered : np.ndarray
-            filtered design variables.
+            filtered  variables.
         dx_filtered : np.ndarray
             sensitivities with respect to filtered design variables.
             
@@ -89,6 +92,60 @@ class TOFilter(ABC):
         -------
         vol_conserv : bool
             True if filter is volume conserving.
+            
+        """
+        ...
+    
+    @property
+    @abstractmethod
+    def vol_conserv(self) -> bool:
+        """
+        Set self.vol_conserv to indicate if filter is volume conserving. 
+        
+        Parameters
+        ----------
+        None.
+            
+        Returns
+        -------
+        vol_conserv : bool
+            True if filter is volume conserving.
+            
+        """
+        ...
+        
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+        
+        Parameters
+        ----------
+        None.
+            
+        Returns
+        -------
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+            
+        """
+        ...
+    
+    @property
+    def constraint_filter_mask(self) -> Union[bool,np.ndarray]:
+        """
+        Indicate if filter is applied to constraint sensitivities. 
+        
+        Parameters
+        ----------
+        None.
+            
+        Returns
+        -------
+        constraint_filter_mask : bool
+            True if filter is applied to all constraint sensitivities,
+            False if none are filtered, or a boolean mask indicating
+            which constraint sensitivities are filtered.
             
         """
         ...

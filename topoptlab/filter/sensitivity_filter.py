@@ -28,6 +28,8 @@ class SensitivityFilter(TOFilter):
                  nelz: Union[int, None] = None,
                  filter_mode: str = "matrix",
                  gamma: float = 1e-3,
+                 filter_objective : bool = True,
+                 constraint_filter_mask : bool = False,
                  **kwargs: Any) -> None:
         """
         Initialize filter and construct the filter if necessary
@@ -49,6 +51,12 @@ class SensitivityFilter(TOFilter):
             said matrix with the densities/sensitivities.
         gamma : float
             small value to avoid zero division.
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : bool
+            True if filter is applied to all constraint sensitivities,
+            False if none are filtered, or a boolean mask indicating
+            which constraint sensitivities are filtered.
         
         Returns
         -------
@@ -68,6 +76,9 @@ class SensitivityFilter(TOFilter):
                                           nely=nely, 
                                           rmin=rmin,
                                           nelz=nelz)
+        #
+        self._filter_objective = filter_objective
+        self._constraint_filter_mask = constraint_filter_mask
         return
         
     def apply_filter(self, 
@@ -81,7 +92,7 @@ class SensitivityFilter(TOFilter):
         Parameters
         ----------
         x : np.ndarray
-            (intermediate) design variables.
+            unfiltered (design) variables.
 
         Returns
         -------
@@ -92,7 +103,7 @@ class SensitivityFilter(TOFilter):
         return x
     
     def apply_filter_dx(self, 
-                        x_filtered : np.ndarray, 
+                        x : np.ndarray, 
                         dx_filtered : np.ndarray,
                         **kwargs: Any) -> np.ndarray:
         """
@@ -106,8 +117,8 @@ class SensitivityFilter(TOFilter):
         
         Parameters
         ----------
-        x_filtered : np.ndarray
-            filtered design variables.
+        x : np.ndarray
+            unfiltered (design) variables.
         dx_filtered : np.ndarray
             sensitivities with respect to filtered design variables.
             
@@ -116,9 +127,7 @@ class SensitivityFilter(TOFilter):
         dx : np.ndarray
             design sensitivities with respect to un-filtered design variables.
         """
-        return self.filter.apply_filter(x_filtered=None,
-                                        dx_filtered=dx_filtered) / \
-               np.maximum(self.gamma, x_filtered)
+        return self.filter.apply_filter(x*dx_filtered) / np.maximum(self.gamma, x)
     
     @property
     def vol_conserv(self) -> bool:
@@ -134,3 +143,39 @@ class SensitivityFilter(TOFilter):
         True
         """
         return True
+    
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+        
+        Parameters
+        ----------
+        None.
+            
+        Returns
+        -------
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+            
+        """
+        return self._filter_objective
+    
+    @property
+    def constraint_filter_mask(self) -> Union[bool,np.ndarray]:
+        """
+        Indicate if filter is applied to constraint sensitivities. 
+        
+        Parameters
+        ----------
+        None.
+            
+        Returns
+        -------
+        constraint_filter_mask : bool
+            True if filter is applied to all constraint sensitivities,
+            False if none are filtered, or a boolean mask indicating
+            which constraint sensitivities are filtered.
+            
+        """
+        return self._constraint_filter_mask

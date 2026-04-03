@@ -43,9 +43,13 @@ class DensityFilter(TOFilter):
     """
     
     def __init__(self,
-                 nelx: int, nely: int, rmin: float,
+                 nelx: int, 
+                 nely: int, 
+                 rmin: float,
                  nelz: Union[int, None] = None,
                  filter_mode: str = "matrix",
+                 filter_objective : bool = True,
+                 constraint_filter_mask : bool = True,
                  **kwargs: Any) -> None:
         """
         Initialize filter and construct the filter if necessary
@@ -65,6 +69,12 @@ class DensityFilter(TOFilter):
             "helmholtz". If "matrix", then density/sensitivity filters are
             implemented via a sparse matrix and applied by multiplying
             said matrix with the densities/sensitivities.
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : bool
+            True if filter is applied to all constraint sensitivities,
+            False if none are filtered, or a boolean mask indicating
+            which constraint sensitivities are filtered.
         
         Returns
         -------
@@ -81,6 +91,9 @@ class DensityFilter(TOFilter):
                                           nely=nely, 
                                           rmin=rmin,
                                           nelz=nelz)  
+        #
+        self._filter_objective = filter_objective
+        self._constraint_filter_mask = constraint_filter_mask
         return
         
     def apply_filter(self, 
@@ -94,7 +107,7 @@ class DensityFilter(TOFilter):
         Parameters
         ----------
         x : np.ndarray
-            (intermediate) design variables.
+            unfiltered variables.
 
         Returns
         -------
@@ -143,3 +156,39 @@ class DensityFilter(TOFilter):
         True
         """
         return True
+
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+        
+        Parameters
+        ----------
+        None.
+            
+        Returns
+        -------
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+            
+        """
+        return self._filter_objective
+    
+    @property
+    def constraint_filter_mask(self) -> Union[bool,np.ndarray]:
+        """
+        Indicate if filter is applied to constraint sensitivities. 
+        
+        Parameters
+        ----------
+        None.
+            
+        Returns
+        -------
+        constraint_filter_mask : bool
+            True if filter is applied to all constraint sensitivities,
+            False if none are filtered, or a boolean mask indicating
+            which constraint sensitivities are filtered.
+            
+        """
+        return self._constraint_filter_mask
