@@ -24,12 +24,15 @@ class SensitivityFilter(TOFilter):
     """
     
     def __init__(self,
-                 nelx: int, nely: int, rmin: float,
+                 nelx: int, 
+                 nely: int, 
+                 n_constr : int,
+                 rmin: float,
                  nelz: Union[int, None] = None,
                  filter_mode: str = "matrix",
                  gamma: float = 1e-3,
                  filter_objective : bool = True,
-                 constraint_filter_mask : bool = False,
+                 constraint_filter_mask : Union[None,np.ndarray] = None,
                  **kwargs: Any) -> None:
         """
         Initialize filter and construct the filter if necessary
@@ -40,6 +43,8 @@ class SensitivityFilter(TOFilter):
             number of elements in x direction.
         nely : int
             number of elements in y direction.
+        n_constr : int 
+            number of constraints.
         rmin : float
             cutoff radius for the filter.
         nelz : int or None
@@ -69,16 +74,24 @@ class SensitivityFilter(TOFilter):
         if filter_mode == "matrix":
             self.filter = MatrixFilter(nelx=nelx, 
                                        nely=nely, 
+                                       n_constr=n_constr,
                                        rmin=rmin,
                                        nelz=nelz)
         elif filter_mode == "helmholtz":
             self.filter = HelmholtzFilter(nelx=nelx, 
                                           nely=nely, 
+                                          n_constr=n_constr,
                                           rmin=rmin,
                                           nelz=nelz)
         #
         self._filter_objective = filter_objective
-        self._constraint_filter_mask = constraint_filter_mask
+        if constraint_filter_mask is None:
+            self._constraint_filter_mask = np.zeros(n_constr, dtype=bool)
+        elif isinstance(constraint_filter_mask, np.ndarray) and \
+            constraint_filter_mask.shape == (n_constr):
+            self._constraint_filter_mask = constraint_filter_mask
+        else:
+            raise TypeError("constraint_filter_mask must be None or np.ndarray of shape (n_constr).")
         return
         
     def apply_filter(self, 

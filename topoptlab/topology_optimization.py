@@ -220,9 +220,9 @@ def main(nelx: int, nely: int,
     xPhys = x.copy()
     # intermediate filter variables
     if isinstance(ft, list):
-        xTilde = dict()
+        xTilde = []
         for i in range(len(ft)):
-            xTilde.append(x.copy)
+            xTilde.append(x.copy())
     # initialize arrays for gradients
     dobj = np.zeros( x.shape,order="F")
     # initialize constraints
@@ -339,9 +339,17 @@ def main(nelx: int, nely: int,
                           nelx=nelx,nely=nely,nelz=nelz)
     # prepare functions to invert this mapping if we use the convolution filter
     if not isinstance(ft, (int,list)) and issubclass(ft, TOFilter):
-        ft = [ft(nelx=nelx,nely=nely,nelz=nelz,rmin=rmin,**filter_kw)]
+        ft = [ft(nelx=nelx,nely=nely,nelz=nelz,
+                 filter_mode=filter_mode,
+                 rmin=rmin,
+                 n_constr=n_constr,
+                 **filter_kw)]
     elif isinstance(ft, list):
-        ft = [ft_obj(nelx=nelx,nely=nely,nelz=nelz,rmin=rmin,**filter_kw) \
+        ft = [ft_obj(nelx=nelx,nely=nely,nelz=nelz,
+                     filter_mode=filter_mode,
+                     rmin=rmin,
+                     n_constr=n_constr,
+                     **filter_kw) \
               for ft_obj in ft]
     # Filter: Build (and assemble) the index+data vectors for the coo matrix format
     elif filter_mode == "matrix":

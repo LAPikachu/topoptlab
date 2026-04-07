@@ -31,39 +31,60 @@ class HelmholtzFilter(TOFilter):
     """
     
     def __init__(self,
-                 nelx: int, nely: int, rmin: float,
-                 nelz: Union[int, None] = None, 
-                 l: np.ndarray = np.array([1.,1.]),
+                 nelx: int,
+                 nely: int,
+                 n_constr: int,
+                 rmin: float,
+                 nelz: Union[int, None] = None,
+                 l: np.ndarray = np.array([1., 1.]),
+                 filter_objective: bool = True,
+                 constraint_filter_mask: Union[None, np.ndarray] = None,
                  **kwargs: Any) -> None:
         """
-        Assemble Helmholtz PDE based filter from "Efficient topology 
+        Assemble Helmholtz PDE based filter from "Efficient topology
         optimization in MATLAB using 88 lines of code". Sets up the FEM problem
         and solves it via cholesky decomposition.
-        
+
         Parameters
         ----------
         nelx : int
             number of elements in x direction.
         nely : int
             number of elements in y direction.
+        n_constr : int
+            number of constraints.
         rmin : float
             cutoff radius for the filter.
         nelz : int or None
             number of elements in z direction.
         l : np.ndarray
-            side lengths of element
-        
+            side lengths of element.
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : None or np.ndarray of shape (n_constr,)
+            if None, filter is applied to all constraint sensitivities.
+            Otherwise, a boolean array indicating which constraint
+            sensitivities are filtered.
+
         Returns
         -------
         None
 
         """
-        KF, self.TF = assemble_helmholtz_filter(nelx = nelx, 
-                                                nely = nely, 
-                                                rmin = rmin,
-                                                nelz = nelz, 
-                                                l = l)
+        KF, self.TF = assemble_helmholtz_filter(nelx=nelx,
+                                                 nely=nely,
+                                                 rmin=rmin,
+                                                 nelz=nelz,
+                                                 l=l)
         self.lu_solve = factorized(KF)
+        self._filter_objective = filter_objective
+        if constraint_filter_mask is None:
+            self._constraint_filter_mask = np.ones(n_constr, dtype=bool)
+        elif isinstance(constraint_filter_mask, np.ndarray) and \
+                constraint_filter_mask.shape == (n_constr,):
+            self._constraint_filter_mask = constraint_filter_mask
+        else:
+            raise TypeError("constraint_filter_mask must be None or np.ndarray of shape (n_constr,).")
         
     def apply_filter(self, x: np.ndarray) -> np.ndarray:
         """
@@ -129,6 +150,32 @@ class HelmholtzFilter(TOFilter):
             design sensitivities with respect to un-filtered design variables.
         """
         return self.TF.T @ self.lu_solve(self.TF@dx_filtered) # TF.T @ self.lu_solve(TF@(dobj*xPhys))/np.maximum(0.001, x)
+
+    @property
+    def vol_conserv(self) -> bool:
+        """
+        Returns True as the Helmholtz filter is volume conserving.
+        """
+        return True
+
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+        """
+        return self._filter_objective
+
+    @property
+    def constraint_filter_mask(self) -> np.ndarray:
+        """
+        Boolean array of shape (n_constr,) indicating which constraint
+        sensitivities the filter is applied to.
+
+        Returns
+        -------
+        constraint_filter_mask : np.ndarray of shape (n_constr,)
+        """
+        return self._constraint_filter_mask
 
 def assemble_helmholtz_filter(nelx: int, nely: int, rmin: float,
                               nelz: Union[int, None] = None, 

@@ -18,7 +18,8 @@ if __name__ == "__main__":
     volfrac = 0.5
     rmin = 2.4  # 5.4
     penal = 3.0
-    ft = DensityFilter # ft==0 -> sens, ft==1 -> dens
+    ft = [DensityFilter, 
+          EtaProjectorXu2010] # ft==0 -> sens, ft==1 -> dens
     display = True
     export = False
     #
@@ -53,8 +54,9 @@ if __name__ == "__main__":
                  matinterpol_kw={"eps":1e-9, "penal": penal},
                  rmin=rmin, 
                  ft=ft, 
+                 filter_kw={"beta": 10, "volfrac": volfrac},
                  filter_mode="matrix",
-                 optimizer="oc",
+                 optimizer="mma",
                  assembly_mode="full",
                  nouteriter=2000,
                  bcs=mbb_2d,
@@ -65,5 +67,5 @@ if __name__ == "__main__":
                               "export": export,
                               "write_log": write_log,
                               "profile": False,
-                              "verbosity": 20,
+                              "verbosity": 1,
                               "output_movie": False})
