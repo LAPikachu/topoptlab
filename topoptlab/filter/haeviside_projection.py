@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from typing import Any,Dict,Tuple,Union
+from functools import partial
 
 import numpy as np
 from scipy.optimize import root_scalar, minimize, Bounds,\
@@ -189,7 +190,7 @@ def find_multieta(etas0: Union[float,np.ndarray],
                   beta: float, 
                   volfrac: float,
                   weights: np.ndarray,
-                  mode: str = "fixed",
+                  mode: str = "mse",
                   etas_fixed: Union[None,np.ndarray] = None,
                   root_args: Dict = {"fprime": True,
                                      "method": "newton",
@@ -229,7 +230,7 @@ def find_multieta(etas0: Union[float,np.ndarray],
         etas0=np.linstpace(0, 1, weights.shape[0]+2)[1:-1]
         func = None#_find_multieta_equalspaced
     elif mode == "mse":
-        etas0 = np.linspace(0, 1, weights.shape[0]+2)[1:-1]
+        etas0 = np.asarray(etas0, dtype=float)
         func = mean_squared_error
     else:
         raise ValueError(f"mode must be 'fixed','equal' or 'mse'. Current value {mode}")
@@ -256,25 +257,38 @@ def find_multieta(etas0: Union[float,np.ndarray],
     elif mode in ["mse"]:
         #
         n = etas0.shape[0]
-        eps_bnd = 1e-6
+        eps_bnd = 1e-8
         # bounds: each eta in (eps, 1-eps)
         bounds = Bounds(eps_bnd * np.ones(n), (1 - eps_bnd) * np.ones(n))
         # ordering constraint: eta[i+1] - eta[i] >= eps_bnd
         A = np.zeros((n - 1, n))
         A[:,:-1] = -np.eye(n-1)
         A[:,1:] += np.eye(n-1)
-        order_constraint = LinearConstraint(A, lb=eps_bnd, ub=np.inf)
+        order_constraint = LinearConstraint(A, 
+                                            lb=eps_bnd, 
+                                            ub=np.inf)
         # volume constraint: mean(xPhys) == volfrac
-        volume_constraint = NonlinearConstraint(
-            fun=lambda etas: volume_constraint_fun(etas, xTilde, beta, weights, volfrac),
-            lb=0., ub=0.)
+        volume_constraint = NonlinearConstraint(fun=partial(volume_constraint_fun, 
+                                                            xTilde=xTilde, 
+                                                            beta=beta, 
+                                                            weights=weights, 
+                                                            volfrac=volfrac),#   volume_constraint_fun(etas, xTilde, beta, weights, volfrac),
+                                                jac=partial(volume_constraint_jac,
+                                                            xTilde=xTilde,
+                                                            beta=beta,
+                                                            weights=weights,
+                                                            volfrac=volfrac),
+                                                lb=-eps_bnd, 
+                                                ub=eps_bnd)
         result = minimize(fun=func,
                           x0=etas0,
                           args=(xTilde, beta, weights, volfrac),
                           method="trust-constr",
-                          jac=None,
+                          jac=mean_squared_error_jac,
                           hess=None,
                           bounds=bounds,
+                          options={"maxiter": 10000, 
+                                   "initial_tr_radius": 0.2},
                           constraints=[order_constraint, volume_constraint])
         #
         if result.success:
@@ -296,6 +310,22 @@ def mean_squared_error(etas: np.ndarray,
                                 weights=weights)
     return ((xProj - xTilde)**2).mean()
 
+def mean_squared_error_jac(etas: np.ndarray,
+                           xTilde: np.ndarray,
+                           beta: float,
+                           weights: Union[None,np.ndarray],
+                           volfrac: float
+                           ) -> np.ndarray:
+    xProj = multieta_projection(etas=etas,
+                                xTilde=xTilde,
+                                beta=beta,
+                                weights=weights)
+    dxProj_deta = multieta_projection_deta(etas=etas,
+                                           xTilde=xTilde,
+                                           beta=beta,
+                                           weights=weights)
+    return (2.0 * (xProj - xTilde)[..., None] * dxProj_deta).mean(axis=0)
+
 def volume_constraint_fun(etas: np.ndarray, 
                           xTilde: np.ndarray, 
                           beta: float,
@@ -308,10 +338,21 @@ def volume_constraint_fun(etas: np.ndarray,
                                 weights=weights)
     return xProj.mean() - volfrac
 
+def volume_constraint_jac(etas: np.ndarray,
+                          xTilde: np.ndarray,
+                          beta: float,
+                          weights: Union[None, np.ndarray],
+                          volfrac: float) -> np.ndarray:
+    return multieta_projection_deta(etas=etas,
+                                    xTilde=xTilde,
+                                    beta=beta,
+                                    weights=weights).mean(axis=0)
+
 def multieta_projection(etas: np.ndarray, 
                         xTilde: np.ndarray, 
                         beta: float, 
-                        weights: Union[None,np.ndarray] = None
+                        weights: Union[None,np.ndarray] = None, 
+                        **kwargs: Any
                         ) -> np.ndarray:
     """
     Perform a differentiable "relaxed" Haeviside projection as done in
@@ -380,8 +421,8 @@ def multieta_projection_dx(etas: np.ndarray,
         first derivative of projected densities.
 
     """
-    xProj_dx = beta * (1 - np.tanh(beta * (xTilde - eta[None,...]))**2) /\
-                      (np.tanh(beta*eta[None,...])+np.tanh(beta*(1-eta[None,...])))
+    xProj_dx = beta * (1 - np.tanh(beta * (xTilde - etas[None,...]))**2) /\
+                      (np.tanh(beta*etas[None,...])+np.tanh(beta*(1-etas[None,...])))
     
     if weights is None:
         weights = np.ones(etas.shape)/etas.shape[0]

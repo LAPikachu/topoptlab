@@ -29,28 +29,37 @@ class HaevisideProjectorGuest2004(TOFilter):
     """
     
     def __init__(self,
+                 filter_objective: bool = True,
+                 constraint_filter_mask: Union[bool, np.ndarray] = True,
                  **kwargs: Any) -> None:
         """
-        Do nothing as this filter requires no initialization.
-        
+        Initialize filter.
+
         Parameters
         ----------
-        None
-        
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : bool or np.ndarray
+            True if filter is applied to all constraint sensitivities,
+            False if none are filtered, or a boolean mask indicating
+            which constraint sensitivities are filtered.
+
         Returns
         -------
         None
 
         """
+        self._filter_objective = filter_objective
+        self._constraint_filter_mask = constraint_filter_mask
         return
-        
-    def apply_filter(self, 
-                     x: np.ndarray, 
+
+    def apply_filter(self,
+                     x: np.ndarray,
                      beta=float,
                      **kwargs: Any) -> np.ndarray:
         """
         Apply filter to (intermediate) design variables x
-        
+
         x_filtered = 1 - exp(-beta x) + x exp(-beta)
         
         Parameters
@@ -100,17 +109,35 @@ class HaevisideProjectorGuest2004(TOFilter):
     @property
     def vol_conserv(self) -> bool:
         """
-        Set self.vol_conserv to False as filter is not volume conserving. 
-        
-        Parameters
-        ----------
-        None.
-            
+        Set self.vol_conserv to False as filter is not volume conserving.
+
         Returns
         -------
         False
         """
         return False
+
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+
+        Returns
+        -------
+        filter_objective : bool
+        """
+        return self._filter_objective
+
+    @property
+    def constraint_filter_mask(self) -> Union[bool, np.ndarray]:
+        """
+        Indicate if filter is applied to constraint sensitivities.
+
+        Returns
+        -------
+        constraint_filter_mask : bool or np.ndarray
+        """
+        return self._constraint_filter_mask
 
 class HaevisideProjectorSigmund2007(TOFilter):
     """
@@ -134,28 +161,37 @@ class HaevisideProjectorSigmund2007(TOFilter):
     """
     
     def __init__(self,
+                 filter_objective: bool = True,
+                 constraint_filter_mask: Union[bool, np.ndarray] = True,
                  **kwargs: Any) -> None:
         """
-        Do nothing as this filter requires no initialization.
-        
+        Initialize filter.
+
         Parameters
         ----------
-        None
-        
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : bool or np.ndarray
+            True if filter is applied to all constraint sensitivities,
+            False if none are filtered, or a boolean mask indicating
+            which constraint sensitivities are filtered.
+
         Returns
         -------
         None
 
         """
+        self._filter_objective = filter_objective
+        self._constraint_filter_mask = constraint_filter_mask
         return
-        
-    def apply_filter(self, 
-                     x: np.ndarray, 
+
+    def apply_filter(self,
+                     x: np.ndarray,
                      beta=float,
                      **kwargs: Any) -> np.ndarray:
         """
         Apply filter to (intermediate) design variables x
-        
+
         x_filtered = np.exp(-beta*(1-x)) - (1-x)*np.exp(-beta)
         
         Parameters
@@ -205,18 +241,37 @@ class HaevisideProjectorSigmund2007(TOFilter):
     @property
     def vol_conserv(self) -> bool:
         """
-        Set self.vol_conserv to False as filter is not volume conserving. 
-        
-        Parameters
-        ----------
-        None.
-            
+        Set self.vol_conserv to False as filter is not volume conserving.
+
         Returns
         -------
         False
         """
         return False
-    
+
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+
+        Returns
+        -------
+        filter_objective : bool
+        """
+        return self._filter_objective
+
+    @property
+    def constraint_filter_mask(self) -> Union[bool, np.ndarray]:
+        """
+        Indicate if filter is applied to constraint sensitivities.
+
+        Returns
+        -------
+        constraint_filter_mask : bool or np.ndarray
+        """
+        return self._constraint_filter_mask
+
+
 class EtaProjectorXu2010(TOFilter):
     """
     
@@ -240,21 +295,31 @@ class EtaProjectorXu2010(TOFilter):
     
     def __init__(self,
                  vol_conserving: bool,
+                 filter_objective: bool = True,
+                 constraint_filter_mask: Union[bool, np.ndarray] = True,
                  **kwargs: Any) -> None:
         """
         Initialize filter by setting volume conserving flag.
-        
+
         Parameters
         ----------
-        vol_conserving: bool
+        vol_conserving : bool
             flag if volume preserving thresholding is done.
-        
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : bool or np.ndarray
+            True if filter is applied to all constraint sensitivities,
+            False if none are filtered, or a boolean mask indicating
+            which constraint sensitivities are filtered.
+
         Returns
         -------
         None
 
         """
         self._vol_conserv = vol_conserving
+        self._filter_objective = filter_objective
+        self._constraint_filter_mask = constraint_filter_mask
         return
         
     def apply_filter(self, 
@@ -334,16 +399,32 @@ class EtaProjectorXu2010(TOFilter):
     @property
     def vol_conserv(self) -> bool:
         """
-        Set self.vol_conserv to  as filter is not volume conserving. 
-        
-        Parameters
-        ----------
-        vol_conserving : bool
-            True, if filter is vol. conserving by finding the right eta. 
-            
+        True if filter is volume conserving (eta found via root search).
+
         Returns
         -------
         vol_conserv : bool
-            True if filter is volume conserving.
         """
         return self._vol_conserv
+
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+
+        Returns
+        -------
+        filter_objective : bool
+        """
+        return self._filter_objective
+
+    @property
+    def constraint_filter_mask(self) -> Union[bool, np.ndarray]:
+        """
+        Indicate if filter is applied to constraint sensitivities.
+
+        Returns
+        -------
+        constraint_filter_mask : bool or np.ndarray
+        """
+        return self._constraint_filter_mask

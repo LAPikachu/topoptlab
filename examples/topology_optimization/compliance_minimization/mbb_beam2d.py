@@ -5,6 +5,10 @@ from topoptlab.accelerators import anderson
 from topoptlab.filter.filter import TOFilter 
 from topoptlab.filter.density_filter import DensityFilter
 from topoptlab.filter.sensitivity_filter import SensitivityFilter
+from topoptlab.filter.haeviside_projectors import HaevisideProjectorGuest2004,\
+                                                  HaevisideProjectorSigmund2007,\
+                                                  EtaProjectorXu2010
+                                                  
 import numpy as np
 
 if __name__ == "__main__":
@@ -14,7 +18,7 @@ if __name__ == "__main__":
     volfrac = 0.5
     rmin = 2.4  # 5.4
     penal = 3.0
-    ft = 0#SensitivityFilter # ft==0 -> sens, ft==1 -> dens
+    ft = DensityFilter # ft==0 -> sens, ft==1 -> dens
     display = True
     export = False
     #

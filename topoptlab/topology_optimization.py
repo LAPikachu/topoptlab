@@ -48,7 +48,7 @@ def main(nelx: int, nely: int,
          volfrac: float, #penal: float, 
          rmin: float, 
          ft: int = 1,
-         filter_kw: Dict = {},
+         filter_kw: Union[Dict,List] = {},
          simulation_kw: Dict = {"grid": "regular",
                                 "element order": 1,
                                 "meshfile": None},
@@ -532,21 +532,34 @@ def main(nelx: int, nely: int,
                   np.min(dconstrs)))
         # sensitivity filtering
         if isinstance(ft, list):
-            dobj[:] = ft[-1].apply_filter_dx(x=x if len(ft)==1 else xTilde[-1],
-                                             x_filtered=xPhys,
-                                             dx_filtered=dobj)
+            #
+            if ft[-1].filter_objective:
+                dobj[:] = ft[-1].apply_filter_dx(x=x if len(ft)==1 else xTilde[-1],
+                                                 x_filtered=xPhys,
+                                                 dx_filtered=dobj, 
+                                                 **filter_kw)
+            #
             if np.any(ft[-1].constraint_filter_mask):
                 dconstrs[:,ft[-1].constraint_filter_mask] = \
                      ft[-1].apply_filter_dx(x=x if len(ft)==1 else xTilde[-1], 
                                             x_filtered=xPhys,
-                                            dx_filtered=dconstrs)
+                                            dx_filtered=dconstrs[:,ft[-1].constraint_filter_mask], 
+                                            **filter_kw)
             if len(ft) > 1:
                 for i in range(len(ft)-2,-1,-1):
-                    dobj[:] = ft[i].apply_filter_dx(x_filtered=xTilde[i],
-                                                     dx_filtered=dobj)
+                    #
+                    if ft[i].filter_objective:
+                        dobj[:] = ft[i].apply_filter_dx(x=x if i==0 else xTilde[i-1],
+                                                        x_filtered=xTilde[i],
+                                                        dx_filtered=dobj, 
+                                                        **filter_kw)
+                    #
                     if np.any(ft[i].constraint_filter_mask):
-                        dconstrs[:] = ft[i].apply_filter_dx(x_filtered=xTilde[i],
-                                                            dx_filtered=dconstrs)
+                        dconstrs[:,ft[i].constraint_filter_mask] =\
+                            ft[i].apply_filter_dx(x=x if i==0 else xTilde[i-1], 
+                                                  x_filtered=xTilde[i],
+                                                  dx_filtered=dconstrs[:,ft[i].constraint_filter_mask], 
+                                                  **filter_kw)
         elif ft == 0 and filter_mode == "matrix":
             dobj[:] = np.asarray(H@(x*dobj) /
                                  Hs) / np.maximum(0.001, x)
@@ -637,12 +650,16 @@ def main(nelx: int, nely: int,
         # Filter design variables
         if isinstance(ft, list):
             if len(ft) > 1:
-                xTilde[0] = ft[0].apply_filter(x=x,rmin=rmin)
+                xTilde[0] = ft[0].apply_filter(x=x,
+                                               **filter_kw)
                 for i in range(1,len(ft)-1):
-                    xTilde[i] = ft[i].apply_filter(x=xTilde[i-1],rmin=rmin)
-                xPhys = ft[-1].apply_filter(x=xTilde[-1],rmin=rmin)
+                    xTilde[i] = ft[i].apply_filter(x=xTilde[i-1],
+                                                   **filter_kw)
+                xPhys = ft[-1].apply_filter(x=xTilde[-1],
+                                            **filter_kw)
             else:
-                xPhys = ft[0].apply_filter(x=x)
+                xPhys = ft[0].apply_filter(x=x,
+                                           **filter_kw)
         elif ft == 0:
             xPhys[:] = x
         elif ft == 1 and filter_mode == "matrix":

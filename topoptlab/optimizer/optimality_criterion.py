@@ -111,8 +111,8 @@ def oc_model_dx2(x: np.ndarray,
     Returns
     -------
     f_surrogate_dx2 : list or np.ndarray
-        list of sparse hessians of the surrogate at ``x`` of shape ``(n,n)`` or 
-        ``(n,n,m)`` or just the diagonals of shape ``(n)`` or ``(n,m)``.
+        list of sparse hessians of the surrogate at ``x`` of shape ``(n,n)``
+        or just the diagonals of shape ``(n)`` or ``(n,m)``.
 
     """
     diag = np.where(dfdx<0,
@@ -120,11 +120,11 @@ def oc_model_dx2(x: np.ndarray,
                      0.)
     if return_diagonal:
         return diag
-    elif x.dim == 1:
+    elif x.ndim == 1:
         return [spdiags(data=diag, 
-                        k=0, format="dia")]
-    elif x == 2.:
-        return [spdiags(data=diag, k=0, format="dia") \
+                        k=0, m=x.shape[0], n=x.shape[0], format="dia")]
+    elif x.ndim == 2:
+        return [spdiags(data=diag[:,i], k=0, m=x.shape[0], n=x.shape[0], format="dia") \
                 for i in range(x.shape[1])]
     else:
         raise ValueError("x must have shape (n,) or (n, m)")
@@ -206,7 +206,7 @@ def ocgeneralized_model_dx(x: np.ndarray,
 
     """
     return np.where(dfdx<0,
-                    damp*dfdx*(x0/x)**(damp+1.), 
+                    dfdx*(x0/x)**(damp+1.), 
                     dfdx)
 
 def ocgeneralized_model_dx2(x : np.ndarray,
@@ -221,7 +221,7 @@ def ocgeneralized_model_dx2(x : np.ndarray,
 
     The surrogate is constructed by expanding ``f`` at the current iterate
     ``x0`` using the OC convex separable approximation: components with 
-    ``dfdx<0`` sensitivities are linearized in ``x**(-1)`` while all others are 
+    ``dfdx<0`` sensitivities are linearized in ``x**(-damp)`` while all others are 
     linearized in ``x``.
 
     Parameters
@@ -243,20 +243,20 @@ def ocgeneralized_model_dx2(x : np.ndarray,
     Returns
     -------
     f_surrogate_dx2 : list or np.ndarray
-        list of sparse hessians of the surrogate at ``x`` of shape ``(n,n)`` or 
-        ``(n,n,m)`` or just the diagonals of shape ``(n)`` or ``(n,m)``.
+        list of sparse hessians of the surrogate at ``x`` of shape ``(n,n)``
+        or just the diagonals of shape ``(n)`` or ``(n,m)``.
 
     """
     diag = np.where(dfdx<0,
-                    -damp*(damp+1)*dfdx*(x0/x)**(damp+1.) / x, 
+                    -(damp+1)*dfdx*(x0/x)**(damp+1.) / x, 
                      0.)
     if return_diagonal:
         return diag
-    elif x.dim == 1:
+    elif x.ndim == 1:
         return [spdiags(data=diag, 
-                        k=0, format="dia")]
-    elif x == 2.:
-        return [spdiags(data=diag, k=0, format="dia") \
+                        k=0, m=x.shape[0], n=x.shape[0], format="dia")]
+    elif x.ndim == 2:
+        return [spdiags(data=diag[:,i], k=0, m=x.shape[0], n=x.shape[0], format="dia") \
                 for i in range(x.shape[1])]
     else:
         raise ValueError("x must have shape (n,) or (n, m)")

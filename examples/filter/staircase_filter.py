@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import numpy as np
-from scipy.special import hyp2f1
 import matplotlib.pyplot as plt
 
 from topoptlab.filter.haeviside_projection import find_eta,\
