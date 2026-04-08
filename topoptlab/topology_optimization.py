@@ -53,6 +53,7 @@ def main(nelx: int, nely: int,
                                 "element order": 1,
                                 "meshfile": None},
          nelz: Union[None,int] = None,
+         initial_guess: Union[None,Dict[str, np.ndarray]] = None,
          filter_mode: str = "matrix",
          lin_solver_kw: Dict = {"name": "scipy-direct"}, 
          preconditioner_kw: Dict = {"name": None},
@@ -99,6 +100,12 @@ def main(nelx: int, nely: int,
         1 density filtering, -1 no filter.
     nelz : int or None
         number of elements in z direction. If None, simulation is 2d.
+    initial_guess : None or dict
+        dictionary with initial values for design or intermediate variables. 
+        Supported keys are "x", " xTilde-number" and "xPhys". The value for 
+        "x" initializes the design variables, "xPhys" initializes the physical 
+        densities, and any key of the form " xTilde-number" initializes the 
+        matching entry in the xTilde list when a list of filters is used.
     filter_mode : str
         indicates how filtering is done. Possible values are "matrix" or
         "helmholtz". If "matrix", then density/sensitivity filters are
@@ -216,13 +223,29 @@ def main(nelx: int, nely: int,
     elif lk is None and ndim == 3:
         lk = lk_linear_elast_3d
     # Allocate design variables (as array), initialize and allocate sens.
-    x = volfrac * np.ones( (n,1), dtype=float,order='F')
-    xPhys = x.copy()
+    if not isinstance(initial_guess,dict):
+        initialguess_keys = None
+    else:
+        initialguess_keys = initial_guess.keys()
+    #
+    if initialguess_keys is None or "x" not in initialguess_keys:
+        x = volfrac * np.ones( (n,1), dtype=float,order='F')
+    else:
+        x = initial_guess["x"]
+    #
+    if initialguess_keys is None or "xPhys" not in initialguess_keys:
+        xPhys = x.copy()
+    else:
+        xPhys = initial_guess["xPhys"]
     # intermediate filter variables
     if isinstance(ft, list):
         xTilde = []
         for i in range(len(ft)):
-            xTilde.append(x.copy())
+            key = f" xTilde-{i}"
+            if initialguess_keys is None or key not in initialguess_keys:
+                xTilde.append(x.copy())
+            else: 
+                xTilde.append(initial_guess[key])
     # initialize arrays for gradients
     dobj = np.zeros( x.shape,order="F")
     # initialize constraints
@@ -417,10 +440,15 @@ def main(nelx: int, nely: int,
         xhist = [x.copy() for i in np.arange(accelerator_kw["max_history"])]
     # initialize adjoint variables
     adj = np.zeros(f.shape)
+    #
+    if "beta" in filter_kw.keys():
+        filter_kw["beta_loop"] = 0
     # optimization loop
     for loop in np.arange(nouteriter):
+        #
+        if "beta_loop" in filter_kw.keys():
+            filter_kw["beta_loop"] += 1 
         # solve FEM, calculate obj. func. and gradients.
-        # for
         if optimizer in ["oc","mma", "ocm","ocg"] or\
            (optimizer in ["gcmma"] and ninneriter==0) or\
            loop==0:
@@ -603,7 +631,7 @@ def main(nelx: int, nely: int,
                   loop, 
                   np.min(dobj), np.max(dobj), 
                   np.min(dconstrs)))
-        # density update by optimizer
+        # design variables update by optimizer
         # optimality criteria
         if optimizer=="oc":
             (x[:,0], g) = oc_top88(x=x[:,0], volfrac=volfrac,
@@ -681,6 +709,7 @@ def main(nelx: int, nely: int,
             xPhys[:] = TF.T @ lu_solve(TF@x)
         elif ft == -1:
             xPhys[:]  = x
+        print(xPhys)
         #
         log.debug("Post Density Filter: it.: {0}, med. x.: {1:.10f}, med. xPhys: {2:.10f}".format(
                   loop, np.median(x),np.median(xPhys)))
@@ -703,8 +732,16 @@ def main(nelx: int, nely: int,
         log.info("it.: {0} obj.: {1:.10f} vol.: {2:.10f} ch.: {3:.10f}".format(
                      loop+1, obj, xPhys.mean(), change))
         # convergence check
-        if change < 0.01:
+        if change < 0.01 and not "beta" in filter_kw.keys():
             break
+        elif change < 0.01 and \
+             "beta" in filter_kw.keys() and \
+             filter_kw["beta"] >= filter_kw["beta_limit"]:
+            break
+        elif change < 0.01 and \
+             "beta" in filter_kw.keys():
+            filter_kw["beta"] = filter_kw["beta"]*filter_kw["beta_scale"]
+            log.info("beta increased.: {0: .1f}".format(filter_kw["beta"]))
     #
     if output_kw["export"]:
         export_vtk(filename=output_kw["file"],

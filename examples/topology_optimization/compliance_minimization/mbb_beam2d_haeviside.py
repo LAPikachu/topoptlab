@@ -13,12 +13,13 @@ import numpy as np
 
 if __name__ == "__main__":
     # Default input parameters
-    nelx = 60
+    nelx = 6
     nely = int(nelx/3)
     volfrac = 0.5
-    rmin = 2.4  # 5.4
+    rmin = 1.5  # 5.4
     penal = 3.0
-    ft = DensityFilter # ft==0 -> sens, ft==1 -> dens
+    ft = [DensityFilter, 
+          EtaProjectorXu2010] # ft==0 -> sens, ft==1 -> dens
     display = True
     export = False
     #
@@ -53,7 +54,11 @@ if __name__ == "__main__":
                  matinterpol_kw={"eps":1e-9, "penal": penal},
                  rmin=rmin, 
                  ft=ft, 
-                 filter_kw={},
+                 filter_kw={"beta": 1,
+                            "beta_scale": 2,
+                            "beta_limit": 512,
+                            "beta_update": 50, 
+                            "volfrac": volfrac},
                  filter_mode="matrix",
                  optimizer="mma",
                  assembly_mode="full",

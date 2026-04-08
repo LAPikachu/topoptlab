@@ -88,6 +88,7 @@ class HaevisideProjectorGuest2004(TOFilter):
     
     def apply_filter_dx(self, 
                         x_filtered : np.ndarray, 
+                        dx_filtered : np.ndarray,
                         beta : float,
                         **kwargs: Any) -> np.ndarray:
         """
@@ -105,6 +106,8 @@ class HaevisideProjectorGuest2004(TOFilter):
         ----------
         x_filtered : np.ndarray
             filtered design variables.
+        dx_filtered : np.ndarray
+            sensitivities with respect to filtered design variables.
         beta : float
             projection strength.
             
@@ -113,7 +116,7 @@ class HaevisideProjectorGuest2004(TOFilter):
         dx : np.ndarray
             design sensitivities with respect to un-filtered design variables.
         """
-        return beta*np.exp(-beta*x_filtered) + np.exp(-beta)
+        return ( beta*np.exp(-beta*x_filtered) + np.exp(-beta) )*dx_filtered
     
     @property
     def vol_conserv(self) -> bool:
@@ -412,6 +415,7 @@ class EtaProjectorXu2010(TOFilter):
     
     def apply_filter_dx(self,
                         x : np.ndarray,
+                        dx_filtered : np.ndarray,
                         beta : float,
                         **kwargs: Any) -> np.ndarray:
         """
@@ -430,6 +434,8 @@ class EtaProjectorXu2010(TOFilter):
         ----------
         x : np.ndarray
             unfiltered design variables.
+        dx_filtered : np.ndarray
+            sensitivities with respect to filtered design variables.
         beta : float
             projection strength.
 

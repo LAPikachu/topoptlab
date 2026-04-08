@@ -49,10 +49,7 @@ def find_eta(eta0: float,
                          x0=eta0-1/2, 
                          args=(xTilde,beta,volfrac),
                          x1=0.,
-                         fprime=True, 
-                         method="newton", 
-                         maxiter=1000, 
-                         bracket=[-1/2,1/2])
+                         **root_args)
     #
     if result.converged:
         return result.root+1/2
