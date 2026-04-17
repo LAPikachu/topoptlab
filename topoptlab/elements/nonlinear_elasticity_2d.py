@@ -120,7 +120,7 @@ def _lk_nonlinear_elast_2d(xe: np.ndarray,
     #print("material: ", (w[None,:,None,None]*B_dE.transpose([0,1,3,2])@c@B_dE*detJ[:,:,None,None]).sum(axis=1))
     # multiply thickness
     if ndim == 2:
-        return t[:,None,None] * Ke, t[:,None,None] * fe 
+        return t[:,None,None] * Ke, t[:,None] * fe 
     else:
         return Ke, fe
 
