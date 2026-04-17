@@ -91,8 +91,8 @@ def mbb_3d(nelx: int, nely: int, nelz: int,
     fixation = np.arange((nelx+1)*(nely+1)*3 - 2,ndof,(nelx+1)*(nely+1)*3)
     #
     fixed = np.hstack((xsymmetry, zsymmetry,
-                       fixation,
-                       fixation+1)) # z fixation
+                       fixation))
+                    #    fixation+1)) # z fixation
     # force pushing down in y direction on top of symmetry plane
     f[np.arange(1,(nelx+1)*(nely+1)*(nelz+1)*3,(nelx+1)*(nely+1)*3), 0] = -1
     return u,f,fixed,np.setdiff1d(dofs,fixed),None
