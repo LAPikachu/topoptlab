@@ -48,11 +48,12 @@ def main(nelx: int, nely: int,
          volfrac: float, #penal: float, 
          rmin: float, 
          ft: int = 1,
-         filter_kw: Dict = {},
+         filter_kw: Union[Dict,List] = {},
          simulation_kw: Dict = {"grid": "regular",
                                 "element order": 1,
                                 "meshfile": None},
          nelz: Union[None,int] = None,
+         initial_guess: Union[None,Dict[str, np.ndarray]] = None,
          filter_mode: str = "matrix",
          lin_solver_kw: Dict = {"name": "scipy-direct"}, 
          preconditioner_kw: Dict = {"name": None},
@@ -99,6 +100,12 @@ def main(nelx: int, nely: int,
         1 density filtering, -1 no filter.
     nelz : int or None
         number of elements in z direction. If None, simulation is 2d.
+    initial_guess : None or dict
+        dictionary with initial values for design or intermediate variables. 
+        Supported keys are "x", " xTilde-number" and "xPhys". The value for 
+        "x" initializes the design variables, "xPhys" initializes the physical 
+        densities, and any key of the form " xTilde-number" initializes the 
+        matching entry in the xTilde list when a list of filters is used.
     filter_mode : str
         indicates how filtering is done. Possible values are "matrix" or
         "helmholtz". If "matrix", then density/sensitivity filters are
@@ -189,13 +196,16 @@ def main(nelx: int, nely: int,
             log.info(f"volfrac: {volfrac} rmin: {rmin}") # penal: {penal}")
         else:
             log.info(f"rmin: {rmin}")#  penal: {penal}")
-        log.info("filter: " + ["Sensitivity based",
-                             "Density based",
-                             "Haeviside Guest",
-                             "Haeviside complement Sigmund 2007",
-                             "Haeviside eta projection",
-                             "Volume Preserving eta projection",
-                             "No filter"][ft])
+        if isinstance(ft, int):
+            log.info("filter: " + ["Sensitivity based",
+                                 "Density based",
+                                 "Haeviside Guest",
+                                 "Haeviside complement Sigmund 2007",
+                                 "Haeviside eta projection",
+                                 "Volume Preserving eta projection",
+                                 "No filter"][ft])
+        else:
+            log.info("filter: custom")
         log.info(f"filter mode: {filter_mode}")
     else:
         # check if log file exists and if True delete
@@ -213,15 +223,29 @@ def main(nelx: int, nely: int,
     elif lk is None and ndim == 3:
         lk = lk_linear_elast_3d
     # Allocate design variables (as array), initialize and allocate sens.
-    x = volfrac * np.ones( (n,1), dtype=float,order='F')
-    #x = np.random.rand(n)
-    #x = x/x.mean() * volfrac
-    xPhys = x.copy()
+    if not isinstance(initial_guess,dict):
+        initialguess_keys = None
+    else:
+        initialguess_keys = initial_guess.keys()
+    #
+    if initialguess_keys is None or "x" not in initialguess_keys:
+        x = volfrac * np.ones( (n,1), dtype=float,order='F')
+    else:
+        x = initial_guess["x"]
+    #
+    if initialguess_keys is None or "xPhys" not in initialguess_keys:
+        xPhys = x.copy()
+    else:
+        xPhys = initial_guess["xPhys"]
     # intermediate filter variables
     if isinstance(ft, list):
-        xTilde = dict()
+        xTilde = []
         for i in range(len(ft)):
-            xTilde.append(x.copy)
+            key = f" xTilde-{i}"
+            if initialguess_keys is None or key not in initialguess_keys:
+                xTilde.append(x.copy())
+            else: 
+                xTilde.append(initial_guess[key])
     # initialize arrays for gradients
     dobj = np.zeros( x.shape,order="F")
     # initialize constraints
@@ -323,7 +347,8 @@ def main(nelx: int, nely: int,
                 if key not in ["density_coupled","strain_uniform"]]):
             raise NotImplementedError("One type of bodyforce/source has not yet been implemented.")
     # Construct the index pointers for the coo format
-    iK,jK = create_matrixinds(edofMat=edofMat, mode=assembly_mode)
+    iK,jK = create_matrixinds(edofMat=edofMat, 
+                              mode=assembly_mode)
     if assembly_mode == "lower":
         assm_indcs = np.column_stack(np.tril_indices_from(KE))
         assm_indcs = assm_indcs[np.lexsort( (assm_indcs[:,0],assm_indcs[:,1]) )]
@@ -336,10 +361,18 @@ def main(nelx: int, nely: int,
         mapping = partial(map_eltovoxel,
                           nelx=nelx,nely=nely,nelz=nelz)
     # prepare functions to invert this mapping if we use the convolution filter
-    if isinstance(ft, TOFilter):
-        ft = [ft(nelx=nelx,nely=nely,nelz=nelz,rmin=rmin,**filter_kw)]
+    if not isinstance(ft, (int,list)) and issubclass(ft, TOFilter):
+        ft = [ft(nelx=nelx,nely=nely,nelz=nelz,
+                 filter_mode=filter_mode,
+                 rmin=rmin,
+                 n_constr=n_constr,
+                 **filter_kw)]
     elif isinstance(ft, list):
-        ft = [ft_obj(nelx=nelx,nely=nely,nelz=nelz,rmin=rmin,**filter_kw) \
+        ft = [ft_obj(nelx=nelx,nely=nely,nelz=nelz,
+                     filter_mode=filter_mode,
+                     rmin=rmin,
+                     n_constr=n_constr,
+                     **filter_kw) \
               for ft_obj in ft]
     # Filter: Build (and assemble) the index+data vectors for the coo matrix format
     elif filter_mode == "matrix":
@@ -407,10 +440,15 @@ def main(nelx: int, nely: int,
         xhist = [x.copy() for i in np.arange(accelerator_kw["max_history"])]
     # initialize adjoint variables
     adj = np.zeros(f.shape)
+    #
+    if "beta" in filter_kw.keys():
+        filter_kw["beta_loop"] = 0
     # optimization loop
     for loop in np.arange(nouteriter):
+        #
+        if "beta_loop" in filter_kw.keys():
+            filter_kw["beta_loop"] += 1 
         # solve FEM, calculate obj. func. and gradients.
-        # for
         if optimizer in ["oc","mma", "ocm","ocg"] or\
            (optimizer in ["gcmma"] and ninneriter==0) or\
            loop==0:
@@ -423,7 +461,9 @@ def main(nelx: int, nely: int,
                 # provides a view onto the original Kes array instead of a copy
                 sK = Kes.reshape(np.prod(Kes.shape))
             elif assembly_mode == "lower":
-                sK = Kes[:,assm_indcs[:,0],assm_indcs[:,1]].reshape( n*int(KE.shape[-1]/2*(KE.shape[-1]+1)))
+                sK = Kes[:,
+                         assm_indcs[:,0],
+                         assm_indcs[:,1]].reshape(n*int(KE.shape[-1]/2*(KE.shape[-1]+1)))
             ### Setup and solve FE problem
             # assemble system matrix
             K = assemble_matrix(sK=sK,iK=iK,jK=jK,
@@ -462,9 +502,12 @@ def main(nelx: int, nely: int,
             dobj[:] = 0.
             for i in np.arange(f.shape[1]):
                 # obj. value, selfadjoint variables, self adjoint flag
-                obj,rhs_adj,self_adj = obj_func(obj=obj, i=i,
-                                                xPhys=xPhys,u=u,
-                                                KE=KE, edofMat=edofMat,
+                obj,rhs_adj,self_adj = obj_func(obj=obj, 
+                                                i=i,
+                                                xPhys=xPhys,
+                                                u=u,
+                                                KE=KE, 
+                                                edofMat=edofMat,
                                                 Kes=Kes,
                                                 matinterpol=matinterpol,
                                                 matinterpol_kw=matinterpol_kw,
@@ -474,7 +517,7 @@ def main(nelx: int, nely: int,
                 # calculate derivatives, else use analytical solution
                 if self_adj:
                     #dobj[:] += rhs_adj
-                    adj[free,i] = rhs_adj[free,i]
+                    adj[free,i] = rhs_adj[free,0]
                 else:
                     adj[free,i:i+1],_,_ = solve_lin(K, 
                                            rhs=rhs_adj[free,i:i+1],
@@ -504,7 +547,7 @@ def main(nelx: int, nely: int,
                     dobj[:,0] -= simp_dx(xPhys=xPhys, eps=0., penal=1.)[:,0]*\
                                          np.dot(adj[edofMat,i],fe_dens[:,i])
                 #
-                log.debug("[DEBUG] FEM: it.: {0}, problem: {1}, min. u: {2:.10f}, med. u: {3:.10f}, max. u: {4:.10f}".format(
+                log.debug("FEM: it.: {0}, problem: {1}, min. u: {2:.10f}, med. u: {3:.10f}, max. u: {4:.10f}".format(
                            loop,i,np.min(u[:,i]),np.median(u[:,i]),np.max(u[:,i])))
         # optimizer is unknown.
         else:
@@ -519,29 +562,40 @@ def main(nelx: int, nely: int,
             elif optimizer in ["oc","ocm","ocg"]:
                 dconstrs[:,0] = np.ones(x.shape[0])
         #
-        log.debug("[DEBUG] Pre-Sensitivity Filter: it.: {0}, dobj: {1:.10f}, dv: {2:.10f}".format(
-                  loop, np.max(dobj), np.min(dconstrs)))
-        # Sensitivity filtering:
+        log.debug("Pre-Sensitivity Filter: it.: {0}, min(dobj): {1:.10f}, max(dobj): {2:.10f}, dv: {3:.10f}".format(
+                  loop, 
+                  np.min(dobj), np.max(dobj), 
+                  np.min(dconstrs)))
+        # sensitivity filtering
         if isinstance(ft, list):
-            dobj[:] = ft[-1].apply_filter_dx(x_filtered=xPhys,
-                                    dx_filtered=dobj)
-            dconstrs[:] = ft[-1].apply_filter_dx(x_filtered=xPhys,
-                                                 dx_filtered=dconstrs)
+            #
+            if ft[-1].filter_objective:
+                dobj[:] = ft[-1].apply_filter_dx(x=x if len(ft)==1 else xTilde[-1],
+                                                 x_filtered=xPhys,
+                                                 dx_filtered=dobj, 
+                                                 **filter_kw)
+            #
+            if np.any(ft[-1].constraint_filter_mask):
+                dconstrs[:,ft[-1].constraint_filter_mask] = \
+                     ft[-1].apply_filter_dx(x=x if len(ft)==1 else xTilde[-1], 
+                                            x_filtered=xPhys,
+                                            dx_filtered=dconstrs[:,ft[-1].constraint_filter_mask], 
+                                            **filter_kw)
             if len(ft) > 1:
-                for i in range(len(ft)-1,-1,-1):
-                    dobj[:] = ft[-1].apply_filter_dx(x_filtered=xTilde[i],
-                                                     dx_filtered=dobj)
-                    dconstrs[:] = ft[-1].apply_filter_dx(x_filtered=xTilde[i],
-                                                         dx_filtered=dconstrs)
-                
-        if isinstance(ft, list):
-            if len(ft) > 1:
-                xTilde[0] = ft[-1].apply_filter(x=x,rmin=rmin)
-                for i in range(1,len(ft)-1):
-                    ft[i].apply_filter(x=xTilde[i-1],rmin=rmin)
-                xPhys = ft[-1].apply_filter(x=xTilde[-1],rmin=rmin)
-            else:
-                xPhys = ft[0].apply_filter(x=x,rmin=rmin)
+                for i in range(len(ft)-2,-1,-1):
+                    #
+                    if ft[i].filter_objective:
+                        dobj[:] = ft[i].apply_filter_dx(x=x if i==0 else xTilde[i-1],
+                                                        x_filtered=xTilde[i],
+                                                        dx_filtered=dobj, 
+                                                        **filter_kw)
+                    #
+                    if np.any(ft[i].constraint_filter_mask):
+                        dconstrs[:,ft[i].constraint_filter_mask] =\
+                            ft[i].apply_filter_dx(x=x if i==0 else xTilde[i-1], 
+                                                  x_filtered=xTilde[i],
+                                                  dx_filtered=dconstrs[:,ft[i].constraint_filter_mask], 
+                                                  **filter_kw)
         elif ft == 0 and filter_mode == "matrix":
             dobj[:] = np.asarray(H@(x*dobj) /
                                  Hs) / np.maximum(0.001, x)
@@ -570,10 +624,14 @@ def main(nelx: int, nely: int,
             dconstrs[:] = TF.T @ lu_solve(TF@dconstrs)
         elif ft == -1:
             pass 
+        else:
+            raise ValueError("No filter applied. ft: ", ft)
         #
-        log.debug("[DEBUG] Post-Sensitivity Filter: it.: {0}, max. dobj: {1:.10f}, min. dv: {2:.10f}".format(
-                  loop, np.max(dobj), np.min(dconstrs)))
-        # density update by optimizer
+        log.debug("Pre-Sensitivity Filter: it.: {0}, min(dobj): {1:.10f}, max(dobj): {2:.10f}, dv: {3:.10f}".format(
+                  loop, 
+                  np.min(dobj), np.max(dobj), 
+                  np.min(dconstrs)))
+        # design variables update by optimizer
         # optimality criteria
         if optimizer=="oc":
             (x[:,0], g) = oc_top88(x=x[:,0], volfrac=volfrac,
@@ -606,8 +664,8 @@ def main(nelx: int, nely: int,
             optimizer_kw["upp"] = upp
             x = xmma.copy()
         #
-        log.debug("[DEBUG] Post Density Update: it.: {0}, med. x.: {1:.10f}, med. xPhys: {2:.10f}".format(
-                   loop, np.median(x),np.median(xPhys)))
+        log.debug("Post Density Update: it.: {0}, med(x): {1:.10f}, mean(x): {2:.10f}, med(xPhys): {3:.10f}".format(
+                   loop, np.median(x),np.mean(x), np.median(xPhys)))
         # mixing
         if ((loop-accelerator_kw["accel_start"])%accelerator_kw["accel_freq"])==0 \
             and loop >= accelerator_kw["accel_start"] and \
@@ -623,17 +681,21 @@ def main(nelx: int, nely: int,
         if len(xhist)> max_history+1:
             xhist = xhist[-max_history-1:]
         #
-        log.debug("[DEBUG] Post Mixing Update: it.: {0}, med. x.: {1:.10f}, med. xPhys: {2:.10f}".format(
+        log.debug("Post Mixing Update: it.: {0}, med. x.: {1:.10f}, med. xPhys: {2:.10f}".format(
                   loop, np.median(x),np.median(xPhys)))
         # Filter design variables
         if isinstance(ft, list):
             if len(ft) > 1:
-                xTilde[0] = ft[-1].apply_filter(x=x,rmin=rmin)
+                xTilde[0] = ft[0].apply_filter(x=x,
+                                               **filter_kw)
                 for i in range(1,len(ft)-1):
-                    ft[i].apply_filter(x=xTilde[i-1],rmin=rmin)
-                xPhys = ft[-1].apply_filter(x=xTilde[-1],rmin=rmin)
+                    xTilde[i] = ft[i].apply_filter(x=xTilde[i-1],
+                                                   **filter_kw)
+                xPhys = ft[-1].apply_filter(x=xTilde[-1],
+                                            **filter_kw)
             else:
-                xPhys = ft[0].apply_filter(x=x,rmin=rmin)
+                xPhys = ft[0].apply_filter(x=x,
+                                           **filter_kw)
         elif ft == 0:
             xPhys[:] = x
         elif ft == 1 and filter_mode == "matrix":
@@ -647,8 +709,9 @@ def main(nelx: int, nely: int,
             xPhys[:] = TF.T @ lu_solve(TF@x)
         elif ft == -1:
             xPhys[:]  = x
+        print(xPhys)
         #
-        log.debug("[DEBUG] Post Density Filter: it.: {0}, med. x.: {1:.10f}, med. xPhys: {2:.10f}".format(
+        log.debug("Post Density Filter: it.: {0}, med. x.: {1:.10f}, med. xPhys: {2:.10f}".format(
                   loop, np.median(x),np.median(xPhys)))
         # compute the change by the inf. norm
         change = np.abs(xhist[-1] - xhist[-2]).max()
@@ -669,8 +732,16 @@ def main(nelx: int, nely: int,
         log.info("it.: {0} obj.: {1:.10f} vol.: {2:.10f} ch.: {3:.10f}".format(
                      loop+1, obj, xPhys.mean(), change))
         # convergence check
-        if change < 0.01:
+        if change < 0.01 and not "beta" in filter_kw.keys():
             break
+        elif change < 0.01 and \
+             "beta" in filter_kw.keys() and \
+             filter_kw["beta"] >= filter_kw["beta_limit"]:
+            break
+        elif change < 0.01 and \
+             "beta" in filter_kw.keys():
+            filter_kw["beta"] = filter_kw["beta"]*filter_kw["beta_scale"]
+            log.info("beta increased.: {0: .1f}".format(filter_kw["beta"]))
     #
     if output_kw["export"]:
         export_vtk(filename=output_kw["file"],

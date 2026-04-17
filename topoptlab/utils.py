@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from warnings import warn
-from typing import Any,Dict,List,Tuple,Union
+from typing import Any, Callable, Dict, List, Tuple, Union
 from itertools import chain
 
 import numpy as np
@@ -338,17 +338,72 @@ def map_voxeltoel(voxel: np.ndarray,
     voxel = voxel.transpose((0,2,1)+tuple(range(3,len(voxel.shape))))
     return voxel.reshape(shape)
 
+def check_meshdata(l : Union[float,List, np.ndarray],
+                   g : Union[float, List, np.ndarray],
+                   ndim : int,
+                   ) -> Tuple[np.ndarray,np.ndarray]:
+    """
+    Validate and normalize mesh geometry inputs.
+
+    This helper function converts the element length input `l` and the
+    angle input `g` into one-dimensional NumPy arrays of the expected size
+    for a mesh of dimension `ndim`.
+
+    Parameters
+    ----------
+    l : float or list or np.ndarray
+        element side lengths. Can be provided as a single float (every 
+        dimension same), a list or a np.ndarray of shape/length `(ndim,)`.
+    g : float or list or np.ndarray
+        element angles. Can be provided as a single float (every 
+        angle same), a list or a np.ndarray of shape/length `(ndim-1)`.
+    ndim : int
+        spatial dimension of the mesh.
+
+    Returns
+    -------
+    l : np.ndarray
+        element side lengths with shape `(ndim,)`.
+    g : np.ndarray
+        array of element angles with shape `(ndim - 1,)`.
+    """
+    if isinstance(l, float):
+        l = np.asarray([l for i in range(ndim)])
+    elif isinstance(l, list):
+        l = np.asarray(l)[:ndim]
+    if isinstance(l, np.ndarray):
+        if not (len(l.shape) == 1 and l.shape[0] == ndim):
+            raise ValueError("l must be of shape ndim. Current ndim: ", ndim, 
+                             "Current shape of l: ", l.shape)
+    else:
+        raise TypeError("l must be float, list or np.ndarray. Current type: ", 
+                        type(l))
+    #
+    if isinstance(g, float):
+        g = np.asarray([g for i in range(ndim-1)])
+    elif isinstance(g, list):
+        g = np.asarray(g)[:ndim-1]
+    if isinstance(g, np.ndarray):
+        if not (len(g.shape) == 1 and g.shape[0] == ndim-1):
+            raise ValueError("g must be of shape ndim-1. Current ndim: ", ndim, 
+                             "Current shape of g: ", g.shape)
+    else:
+        raise TypeError("g must be float, list or np.ndarray. Current type: ", 
+                        type(g))
+    return l, g
+
 def elid_to_coords(el: np.ndarray, 
                    nelx: int, nely: int, nelz: Union[None,int] = None,
-                   l: Union[float,List] = [1.,1.,1.],
+                   l: Union[float,List, np.ndarray] = [1.,1.,1.],
+                   g: Union[float, List, np.ndarray] = [0.,0.], 
                    **kwargs: Any) -> np.ndarray:
     """
     Map element IDs to cartesian coordinates in the usual regular grid.
 
     Parameters
     ----------
-    el : np.ndarray, shape (n)
-        element IDs.
+    el : np.ndarray
+        element IDs of shape (nel).
     nelx : int
         number of elements in x direction.
     nely : int
@@ -356,39 +411,52 @@ def elid_to_coords(el: np.ndarray,
     nelz : int or None
         number of elements in z direction.
     l : float or list 
-        side length of element
+        side length of elements.
+    g : float or list 
+        angle of elements. if both angles zero, element is rectangular/cuboid.
     
     Returns
     -------
     coords : np.ndarray 
-        element coordinates of shape shape (n,ndim).
+        element coordinates of shape shape (nel,ndim).
 
     """
+    #
     if nelz is None:
         ndim = 2
     else:
         ndim = 3
     #
-    if isinstance(l, float):
-        l = [l for i in range(ndim)]
+    l,g = check_meshdata(l=l, 
+                         g=g, 
+                         ndim=ndim)
     # find coordinates of each element/density
     if ndim == 2:
         x,y = np.divmod(el,nely) # same as np.floor(el/nely),el%nely
         coords = (np.array([[0,nely-1]])-np.column_stack((x,y)))
-        #coords = coords * np.array([[-1,1]]) * np.array(l)[None,:ndim] 
+        
     else:
         z,rest = np.divmod(el,nelx*nely)
         x,y = np.divmod(rest,nely)
-        coords = (np.array([[0,nely-1,0]])-np.column_stack((x,y,z)))
-        #coords = coords * np.array([[-1,1,1]]) * np.array(l)[None,:] 
-    return coords * np.array([[-1,1,-1]])[:,:ndim] * np.array(l)[None,:ndim] 
+        coords = (np.array([[0,nely-1,0]])-np.column_stack((x,y,z))) 
+    #
+    R = np.eye(ndim)
+    R[0,1:] = np.tan(g)
+    #
+    scale_flip = np.array([[-1,1,-1]])[:,:ndim]*np.array(l)[None,:ndim]
+    return coords*scale_flip@R.T
     
 def nodeid_to_coords(nd: np.ndarray, 
-                     nelx: int, nely: int, nelz: Union[None,int] = None,
+                     nelx: int, 
+                     nely: int, 
+                     nelz: Union[None,int] = None,
                      l: Union[float,List] = [1.,1.,1.],
+                     g: Union[float, List, np.ndarray] = [0.,0.], 
                      **kwargs: Any) -> np.ndarray:
     """
-    Map node IDs to cartesian coordinates in the usual regular grid.
+    Map node IDs to cartesian coordinates in the usual regular grid. Node 
+    coordinates by convention start from -0.5*l_i (sidelength of element in the 
+    respective dimension). 
 
     Parameters
     ----------
@@ -402,6 +470,8 @@ def nodeid_to_coords(nd: np.ndarray,
         number of elements in z direction.
     l : float or List
         side length of element
+    g : float or list 
+        angle of elements. if both angles zero, element is rectangular/cuboid.
         
     Returns
     -------
@@ -414,19 +484,24 @@ def nodeid_to_coords(nd: np.ndarray,
     else:
         ndim = 3
     #
-    if isinstance(l, float):
-        l = [l for i in range(ndim)]
+    l,g = check_meshdata(l=l, 
+                         g=g, 
+                         ndim=ndim)
     # find coordinates of each element/density
     if nelz is None:
         x,y = np.divmod(nd,nely+1) # same as np.floor(el/nely),el%nely
-        coords = np.array([[1,nely]])-np.column_stack((x,y))-0.5
-        #coords = coords * np.array([[-1,1]]) * np.array(l)[None,:]
+        coords = np.array([[1,nely]])-np.column_stack((x,y))
     else:
         z,rest = np.divmod(nd,(nelx+1)*(nely+1))
         x,y = np.divmod(rest,(nely+1))
-        coords = np.array([[1,nely,1]])-np.column_stack((x,y,z))-0.5
-        #coords = coords * np.array([[-1,1,1]]) * np.array(l)[None,:]
-    return coords * np.array([[-1,1,-1]])[:,:ndim] * np.array(l)[None,:ndim]
+        coords = np.array([[1,nely,1]])-np.column_stack((x,y,z))
+    #
+    R = np.eye(ndim)
+    R[0,1:] = np.tan(g)
+    #
+    scale_flip = np.array([[-1,1,-1]])[:,:ndim]*np.array(l)[None,:ndim]
+    #
+    return (coords-0.5)*scale_flip@R.T
 
 def upsampling(x: np.ndarray, magnification: Union[float,int,List],
                nelx: int, nely: int, nelz: Union[None,int] = None,

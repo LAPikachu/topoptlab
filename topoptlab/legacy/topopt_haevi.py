@@ -14,8 +14,8 @@ from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
 
 from topoptlab.output_designs import export_vtk
-from topoptlab.filters import find_eta
-from topoptlab.optimality_criterion import oc_haevi
+from topoptlab.filter.haeviside_projection import find_eta
+from topoptlab.optimizer.optimality_criterion import oc_haevi
 from topoptlab.fem import update_indices
 from topoptlab.elements.linear_elasticity_2d import lk_linear_elast_2d
 
@@ -357,14 +357,30 @@ def main(nelx, nely, volfrac, penal, rmin, ft,
         xold[:] = x
         # optimality criteria
         if solver=="oc" and ft in filters:
-            (x[:], g) = oc_haevi(nelx, nely, x, volfrac, dc, dv, g, 
-                           pass_el,
-                           None,None,None,None,ft,
-                           debug)
+            (x[:], g) = oc_haevi(x, 
+                                  volfrac, 
+                                  dc, 
+                                  dv, 
+                                  g, 
+                                  pass_el,
+                                  None,
+                                  None,
+                                  None,
+                                  None,
+                                  ft,
+                                  debug)
         elif solver=="oc" and ft in projections:
-            (x[:],xTilde[:],xPhys[:],g) = oc_haevi(nelx, nely, x, volfrac, dc, dv, g, 
+            (x[:],xTilde[:],xPhys[:],g) = oc_haevi(x, 
+                                                   volfrac, 
+                                                   dc, 
+                                                   dv, 
+                                                   g, 
                                                    pass_el,
-                                                   H,Hs,beta,eta,ft,
+                                                   H,
+                                                   Hs,
+                                                   beta,
+                                                   eta,
+                                                   ft,
                                                    debug=debug) 
         # method of moving asymptotes, implementation by Arjen Deetman
         elif solver=="mma":
@@ -572,7 +588,7 @@ if __name__ == "__main__":
     volfrac = 0.5  # 0.4
     rmin = 2.4  # 5.4
     penal = 3.0
-    ft = 1 # ft==0 -> sens, ft==1 -> dens
+    ft = 5 # ft==0 -> sens, ft==1 -> dens
     import sys
     if len(sys.argv) > 1:
         nelx = int(sys.argv[1])
@@ -588,7 +604,7 @@ if __name__ == "__main__":
         ft = int(sys.argv[6])
     try:
         main(nelx, nely, volfrac, penal, rmin, ft, 
-             passive=False,pde=False,solver="mma",
+             passive=False,pde=False,solver="oc",
              nouteriter=2000,
              ninneriter=0,
              debug=False)

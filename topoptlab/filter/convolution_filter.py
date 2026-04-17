@@ -20,24 +20,37 @@ class ConvolutionFilter(TOFilter):
     """
     
     def __init__(self,
-                 nelx: int, nely: int, rmin: float,
-                 nelz: Union[int, None] = None, 
+                 nelx: int,
+                 nely: int,
+                 n_constr: int,
+                 rmin: float,
+                 nelz: Union[int, None] = None,
+                 filter_objective: bool = True,
+                 constraint_filter_mask: Union[None, np.ndarray] = None,
                  **kwargs: Any) -> None:
         """
-        Assemble matrix-based filter from "Efficient topology optimization in 
-        MATLAB using 88 lines of code".
-        
+        Assemble convolution-based filter from "Efficient topology optimization
+        in MATLAB using 88 lines of code".
+
         Parameters
         ----------
         nelx : int
             number of elements in x direction.
         nely : int
             number of elements in y direction.
+        n_constr : int
+            number of constraints.
         rmin : float
             cutoff radius for the filter.
         nelz : int or None
             number of elements in z direction.
-        
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : None or np.ndarray of shape (n_constr,)
+            if None, filter is applied to all constraint sensitivities.
+            Otherwise, a boolean array indicating which constraint
+            sensitivities are filtered.
+
         Returns
         -------
         None
@@ -68,7 +81,15 @@ class ConvolutionFilter(TOFilter):
                                                       rmin=rmin,
                                                       mapping=self.mapping,
                                                       invmapping=self.invmapping)
-        
+        self._filter_objective = filter_objective
+        if constraint_filter_mask is None:
+            self._constraint_filter_mask = np.ones(n_constr, dtype=bool)
+        elif isinstance(constraint_filter_mask, np.ndarray) and \
+                constraint_filter_mask.shape == (n_constr,):
+            self._constraint_filter_mask = constraint_filter_mask
+        else:
+            raise TypeError("constraint_filter_mask must be None or np.ndarray of shape (n_constr,).")
+
     def apply_filter(self, x: np.ndarray) -> np.ndarray:
         """
         Apply filter to the (intermediate) design variables x:
@@ -121,6 +142,33 @@ class ConvolutionFilter(TOFilter):
                                         axes=(0,1,2)[:self.ndim],
                                         mode="constant",
                                         cval=0.0)) / self.hs
+
+    @property
+    def vol_conserv(self) -> bool:
+        """
+        Returns True as the convolution filter is volume conserving.
+        """
+        return True
+
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+        """
+        return self._filter_objective
+
+    @property
+    def constraint_filter_mask(self) -> np.ndarray:
+        """
+        Boolean array of shape (n_constr,) indicating which constraint
+        sensitivities the filter is applied to.
+
+        Returns
+        -------
+        constraint_filter_mask : np.ndarray of shape (n_constr,)
+        """
+        return self._constraint_filter_mask
+
 
 def assemble_convolution_filter(nelx: int, nely: int, rmin: float,
                                 mapping: Callable, 
