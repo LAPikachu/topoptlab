@@ -17,6 +17,10 @@ from topoptlab.solve_linsystem import solve_lin
 from topoptlab.output_designs import export_vtk
 #
 from topoptlab.material_interpolation import simp
+from topoptlab.fem import interpolate
+from topoptlab.elements.bilinear_quadrilateral  import shape_functions_dxi, invjacobian, invjacobian_rectangle
+# debugging
+import os
 # MAIN DRIVER
 def fem_stationary_heatconduction(nelx, 
                                   nely, 
@@ -57,7 +61,7 @@ def fem_stationary_heatconduction(nelx,
         options.
     preconditioner : str or None
         preconditioner for linear systems. 
-    assembly_mode : str
+    assembly_mode : stshape_functions_dxir
         whether full or only lower triangle of linear system / matrix is 
         created.
     l : float or tuple of length (ndim) or np.ndarray of shape (ndim)
@@ -150,7 +154,27 @@ def fem_stationary_heatconduction(nelx,
                                            solver=lin_solver,
                                            preconditioner=preconditioner)
     #
+    '''
+    print(edofMat[0])
+    print(len(T))
+    print(T[0])
+    print(T[0].shape)
+    print(T[[[0,1,2], [1,2,3], [5,6,7]],0])    
+    print(T[edofMat, 0].shape) 
+    delta_N_e = shape_functions_dxi(0,0)
+    print(shape_functions_dxi(0,0).shape)
+    print(T[edofMat,0][0:2])
+    print(shape_functions_dxi(0,0))
+    J_e_inv = invjacobian_rectangle(2,2) 
+    B_e = delta_N_e @ J_e_inv
+    print((T[edofMat,0][...,None]*B_e))
+    print((T[edofMat,0][...,None]*B_e).shape)
+    print((T[edofMat,0][...,None]*B_e).sum(axis=1).shape)
+    print((T[edofMat,0][...,None]*shape_functions_dxi(0,0)).sum(axis=1).shape)
+    #print(([[1,1,1,1,1,1]][...,None]*shape_functions_dxi(0,0)).sum(axis=1))
+    '''
     if export:
+        print(os.getcwd())
         export_vtk(filename=file,
                    nelx=nelx,
                    nely=nely,
@@ -159,13 +183,36 @@ def fem_stationary_heatconduction(nelx,
                    elem_size=l,
                    u=T,
                    f=f)
-    return
+    
+    return T, xPhys, edofMat
+
+def burn_max_element(T, xPhys, edofMat, nelz):
+    # interpolate over element
+    if nelz != None:
+        from topoptlab.elements.trilinear_hexahedron import shape_functions_dxi, invjacobian, invjacobian_cuboid
+        delta_N_e = shape_functions_dxi(0,0,0)
+        J_e_inv = invjacobian_cuboid(2,2,2) 
+        B_e = delta_N_e @ J_e_inv
+    else:
+        delta_N_e = shape_functions_dxi(0,0)
+        J_e_inv = invjacobian_rectangle(2,2) 
+        B_e = delta_N_e @ J_e_inv
+    delta_T  = (T[edofMat,0][...,None]*B_e).sum(axis=1)
+    C = xPhys.reshape(-1,1)
+    sigma = C * delta_T 
+    sigma_von_mises = np.sum(np.sqrt(sigma ** 2), axis=1, keepdims=True)
+    max_element  = np.argmax(sigma_von_mises)
+    xPhys[max_element] = 0
+    print(max_element)
+
+    return xPhys 
 
 if __name__ == "__main__":
     #
-    nelx = 10
-    nely = 10
-    nelz = None
+    nelx = 20
+    nely = 20
+    nelz = 20
+    steps = 10
     #
     import sys
     if len(sys.argv)>1: 
@@ -174,5 +221,12 @@ if __name__ == "__main__":
         nely = int(sys.argv[2])
     if len(sys.argv)>3: 
         nelz = int(sys.argv[3])
-    #
-    fem_stationary_heatconduction(nelx=nelx, nely=nely, nelz=nely)
+    # 
+    xPhys = (np.random.uniform(0.5,1,size=100))
+    T, xPhys, edofMat = fem_stationary_heatconduction(nelx=nelx, nely=nely, nelz=nelz, file=f"examples/fem/heat_conduction/stationary_heatconduction_0")
+    xPhys = burn_max_element(T, xPhys, edofMat, nelz)
+    for step in range(1,steps):
+        T, xPhys, edofMat =  fem_stationary_heatconduction(nelx=nelx, nely=nely, nelz=nelz, xPhys=xPhys, file=f"examples/fem/heat_conduction/stationary_heatconduction_{step}")
+        xPhys = burn_max_element(T, xPhys, edofMat, nelz)
+        
+
