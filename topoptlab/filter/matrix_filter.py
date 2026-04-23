@@ -18,42 +18,62 @@ class MatrixFilter(TOFilter):
     """
     
     def __init__(self,
-                 nelx: int, 
-                 nely: int, 
+                 nelx: int,
+                 nely: int,
+                 n_constr: int,
                  rmin: float,
                  nelz: Union[int, None] = None,
-                 pbc: Union[bool,List,np.ndarray] = False,
+                 pbc: Union[bool, List, np.ndarray] = False,
+                 filter_objective: bool = True,
+                 constraint_filter_mask: Union[None, np.ndarray] = None,
                  **kwargs: Any) -> None:
         """
-        Assemble matrix-based filter from "Efficient topology optimization in 
+        Assemble matrix-based filter from "Efficient topology optimization in
         MATLAB using 88 lines of code".
-        
+
         Parameters
         ----------
         nelx : int
             number of elements in x direction.
         nely : int
             number of elements in y direction.
+        n_constr : int
+            number of constraints.
         rmin : float
             cutoff radius for the filter.
         nelz : int or None
             number of elements in z direction.
-        pbc : bool, list or np.ndarray 
+        pbc : bool, list or np.ndarray
             flag for periodic boundary conditions.
-        
-        
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : None or np.ndarray of shape (n_constr,)
+            if None, filter is applied to all constraint sensitivities.
+            Otherwise, a boolean array indicating which constraint
+            sensitivities are filtered.
+
         Returns
         -------
         None
 
         """
-        self.H, self.Hs = assemble_matrix_filter(nelx=nelx, 
-                                                 nely=nely, 
-                                                 nelz=nelz,
-                                                 rmin=rmin, 
-                                                 pbc=pbc)
+        self.H, self.Hs = assemble_matrix_filter(nelx=nelx,
+                                                  nely=nely,
+                                                  nelz=nelz,
+                                                  rmin=rmin,
+                                                  pbc=pbc)
+        self._filter_objective = filter_objective
+        if constraint_filter_mask is None:
+            self._constraint_filter_mask = np.ones(n_constr, dtype=bool)
+        elif isinstance(constraint_filter_mask, np.ndarray) and \
+                constraint_filter_mask.shape == (n_constr,):
+            self._constraint_filter_mask = constraint_filter_mask
+        else:
+            raise TypeError("constraint_filter_mask must be None or np.ndarray of shape (n_constr,).")
+        return
         
-    def apply_filter(self, x: np.ndarray, 
+    def apply_filter(self, 
+                     x: np.ndarray, 
                      **kwargs: Any) -> np.ndarray:
         """
         Apply filter to the (intermediate) design variables x:
@@ -89,8 +109,6 @@ class MatrixFilter(TOFilter):
         
         Parameters
         ----------
-        x_filtered : np.ndarray
-            filtered design variables.
         dx_filtered : np.ndarray
             sensitivities with respect to filtered design variables.
             
@@ -104,20 +122,31 @@ class MatrixFilter(TOFilter):
     @property
     def vol_conserv(self) -> bool:
         """
-        Set self.vol_conserv to False as filter is not necessarily volume 
-        conserving. 
-        
-        Parameters
-        ----------
-        None.
-            
+        Set self.vol_conserv to False as filter is not necessarily volume
+        conserving.
+
         Returns
         -------
         False
         """
         return False
-    
-def assemble_matrix_filter(nelx: int, nely: int, 
+
+    @property
+    def filter_objective(self) -> bool:
+        """
+        If True, filter is applied to objective sensitivities.
+        """
+        return self._filter_objective
+
+    @property
+    def constraint_filter_mask(self) -> bool:
+        """
+        Default scalar mask for constraint sensitivity filtering.
+        """
+        return self._constraint_filter_mask
+
+def assemble_matrix_filter(nelx: int, 
+                           nely: int, 
                            rmin: Union[float,List,np.ndarray],
                            nelz: Union[int, None] = None,
                            pbc: Union[bool,List,np.ndarray] = False,
