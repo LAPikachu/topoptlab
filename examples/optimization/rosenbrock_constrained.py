@@ -13,10 +13,13 @@ def demonstrate_alm_line(nvars: int = 3,
                          verbose: bool = False,
                          maxiter: int = 2000,
                          maxinnerit: int = 5,
-                         start_constrained: bool = True,
-                         rho: float = 1e0, 
-                         rho_scale: int = 1.05, 
-                         eps_eq: float = 1e-8) -> Tuple[np.ndarray,
+                         start_constrained: bool = False,
+                         rho: float = 1e0,
+                         rho_scale: int = 1.05,
+                         rho_max: float = 1e2,
+                         eps_eq: float = 1e-8,
+                         use_viability_policy: bool = True,
+                         feas_tol: float = 1e-5) -> Tuple[np.ndarray,
                                                         np.ndarray, 
                                                         np.ndarray]:
     """
@@ -116,8 +119,12 @@ def demonstrate_alm_line(nvars: int = 3,
             if np.isclose(step_size, 0):
                 raise RuntimeError("line search failed.")
             # trial update design variables
+            if use_viability_policy and np.abs(ceq).max() > feas_tol:
+                fgrad_step = np.zeros_like(fgrad)
+            else:
+                fgrad_step = fgrad
             xnew[:,0], lam_new, mu_new = alm_first_order(x=x[:,0],
-                                               fgrad=fgrad,
+                                               fgrad=fgrad_step,
                                                xold=xold[:,0],
                                                fgradold=fgradold,
                                                ceq=ceq,
@@ -141,16 +148,16 @@ def demonstrate_alm_line(nvars: int = 3,
             # no inequality constraints in this example
             cineq_new = np.zeros((0, 1))
             #
-            lagr_new = alm_lagrangian(obj=obj_new, 
-                                  ceq=ceq_new,
-                                  cineq=cineq_new,
-                                  lam=lam,
-                                  mu=mu,
-                                  rho=rho)
+            lagr_new = alm_lagrangian(obj=obj_new,
+                                      ceq=ceq_new,
+                                      cineq=cineq_new,
+                                      lam=lam,
+                                      mu=mu,
+                                      rho=rho)
             # 
             change = np.abs(xnew-x).max()
             #
-            if verbose and False:
+            if verbose and verbose > 20:
                 print("inner it.: {0}, obj.: {1:.10f}, lagr.: {2:.10f}, ceq.: {3:.10f}, "
                       "rho: {4:.4e}, ch.: {5:.4f}".format(
                         j+1,
@@ -163,7 +170,7 @@ def demonstrate_alm_line(nvars: int = 3,
             if lagr_new < lagr:
                 break
             # scale penalty 
-            #ho = rho * rho_scale
+            #rho = rho * rho_scale
             # reduce step size
             step_size=step_size * 3/4
         # store variables for memory/comparison
@@ -181,7 +188,9 @@ def demonstrate_alm_line(nvars: int = 3,
         cineq = cineq_new.copy()
         lagr = lagr_new
         # scale penalty if equality constraint violated and not improving
-        if (np.abs(ceq) > eps_eq) and (np.abs(ceq) > np.abs(ceqold)):
+        if rho < rho_max and \
+           (np.abs(ceq) > eps_eq) and\
+           (np.abs(ceq) > np.abs(ceqold)):
             rho = rho * rho_scale
         #
         change = np.abs(x - xold).max()
@@ -210,7 +219,8 @@ def demonstrate_alm_line(nvars: int = 3,
     print("final x: ", x[:, 0])
     print("final gradient: ", fgrad[:, 0])
     print("constraint vs ideal: ", (x**2).sum(), nvars)
-    print("final lambda: ", float(lam[0, 0]))
+    print("final lambda: ", lam[0, 0])
+    print("final rho: ", rho)
     print("after {0} iterations".format(i + 1))
 
     return x, fgrad, lam, i + 1
@@ -282,6 +292,12 @@ def demonstrate_alm(nvars=3,
     xmax = 1.5 * np.ones((nvars, 1))
     #
     move = 1e-2
+    # equality constraint: (x^2).sum()/nvars - 1 = 0
+    dceq = (2. / nvars) * x
+    dceqold = dceq.copy()
+    # no inequality constraints in this example
+    dcineq = np.zeros((nvars, 0))
+    dcineqold = dcineq.copy()
     #
     for i in range(maxiter):
         #
@@ -292,7 +308,7 @@ def demonstrate_alm(nvars=3,
         dceq = (2. / nvars) * x
         # no inequality constraints in this example
         cineq = np.zeros((0, 1))
-        dcineq = np.zeros((nvars,0))
+        dcineq = np.zeros((nvars, 0))
         #
         xnew, lam[:], _ = alm_first_order(x=x[:,0],
                                           fgrad=fgrad[:,0],
@@ -300,8 +316,10 @@ def demonstrate_alm(nvars=3,
                                           fgradold=fgradold,
                                           ceq=ceq,
                                           dceq=dceq,
+                                          dceqold=dceqold,
                                           cineq=cineq,
                                           dcineq=dcineq,
+                                          dcineqold=dcineqold,
                                           lam=lam,
                                           mu=mu,
                                           xmin=xmin[:,0],
@@ -317,7 +335,9 @@ def demonstrate_alm(nvars=3,
         fgradold = fgrad[:,0]\
                    + dceq.dot(lam + rho * ceq)[:,0]\
                    + dcineq.dot(mu + rho * cineq)[:,0]
-        ceqold = ceq 
+        ceqold = ceq
+        dceqold = dceq.copy()
+        dcineqold = dcineq.copy()
         #
         x[:,0] = xnew
         #
@@ -633,7 +653,8 @@ if __name__ == "__main__":
 
     #
     verbose = True
-    maxiter = int(1e3)
+    maxiter = int(2e3)
+    constrained = False
     #
     import sys
     if len(sys.argv)>1:
@@ -641,6 +662,7 @@ if __name__ == "__main__":
     if len(sys.argv)>2:
         maxiter = int(sys.argv[2])
     #
-    demonstrate_alm_line(verbose=verbose, maxiter=maxiter)
-    #demonstrate_mma(verbose=verbose, maxiter=maxiter)
-    #demonstrate_gcmma(verbose=verbose, maxiter=maxiter)
+    demonstrate_alm_line(verbose=verbose, maxiter=maxiter, start_constrained = constrained)
+    #demonstrate_alm(verbose=verbose, maxiter=maxiter, start_constrained = constrained)
+    #demonstrate_mma(verbose=verbose, maxiter=maxiter, start_constrained = constrained)
+    #demonstrate_gcmma(verbose=verbose, maxiter=maxiter, start_constrained = constrained)

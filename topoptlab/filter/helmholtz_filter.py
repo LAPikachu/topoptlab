@@ -72,10 +72,10 @@ class HelmholtzFilter(TOFilter):
 
         """
         KF, self.TF = assemble_helmholtz_filter(nelx=nelx,
-                                                 nely=nely,
-                                                 rmin=rmin,
-                                                 nelz=nelz,
-                                                 l=l)
+                                                nely=nely,
+                                                rmin=rmin,
+                                                nelz=nelz,
+                                                l=l)
         self.lu_solve = factorized(KF)
         self._filter_objective = filter_objective
         if constraint_filter_mask is None:
@@ -176,6 +176,13 @@ class HelmholtzFilter(TOFilter):
         constraint_filter_mask : np.ndarray of shape (n_constr,)
         """
         return self._constraint_filter_mask
+
+    @property
+    def changes_filter_kw(self) -> bool:
+        return False
+
+    def update_filter_kw(self, filter_kw: dict) -> None:
+        return
 
 def assemble_helmholtz_filter(nelx: int, nely: int, rmin: float,
                               nelz: Union[int, None] = None, 

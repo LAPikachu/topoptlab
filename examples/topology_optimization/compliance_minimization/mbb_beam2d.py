@@ -16,9 +16,9 @@ if __name__ == "__main__":
     nelx = 60
     nely = int(nelx/3)
     volfrac = 0.5
-    rmin = 2.4  # 5.4
+    rmin = 0.04*nelx  # 5.4
     penal = 3.0
-    ft = DensityFilter # ft==0 -> sens, ft==1 -> dens
+    ft = 0#DensityFilter # ft==0 -> sens, ft==1 -> dens
     display = True
     export = False
     #
@@ -55,7 +55,7 @@ if __name__ == "__main__":
                  ft=ft, 
                  filter_kw={},
                  filter_mode="matrix",
-                 optimizer="mma",
+                 optimizer="oc",
                  assembly_mode="full",
                  nouteriter=2000,
                  bcs=mbb_2d,
@@ -67,4 +67,5 @@ if __name__ == "__main__":
                               "write_log": write_log,
                               "profile": False,
                               "verbosity": 20,
-                              "output_movie": False})
+                              "output_movie": False,
+                              "save_pdf": True})

@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import numpy as np
+
 from topoptlab.topology_optimization import main
+from topoptlab.optimizer.mma_utils import mma_defaultkws
 from topoptlab.example_bc.lin_elast import mbb_2d
 from topoptlab.accelerators import anderson
 from topoptlab.filter.filter import TOFilter 
@@ -8,15 +11,15 @@ from topoptlab.filter.sensitivity_filter import SensitivityFilter
 from topoptlab.filter.haeviside_projectors import HaevisideProjectorGuest2004,\
                                                   HaevisideProjectorSigmund2007,\
                                                   EtaProjectorXu2010
-                                                  
-import numpy as np
+from topoptlab.convergence_criteria import norm_design_change
+from topoptlab.param_continuation import beta_scaling
 
 if __name__ == "__main__":
     # Default input parameters
-    nelx = 6
+    nelx = 240
     nely = int(nelx/3)
     volfrac = 0.5
-    rmin = 1.5  # 5.4
+    rmin = 3.6  # 5.4
     penal = 3.0
     ft = [DensityFilter, 
           EtaProjectorXu2010] # ft==0 -> sens, ft==1 -> dens
@@ -50,18 +53,21 @@ if __name__ == "__main__":
     if len(sys.argv)>9:
         write_log = bool(int(sys.argv[9]))
     #
+    optimizer_kw = mma_defaultkws(n=nelx*nely, 
+                                  n_constr=1)
+    optimizer_kw["move"] = 0.025
+    #
     main(nelx=nelx, nely=nely, volfrac=volfrac, 
                  matinterpol_kw={"eps":1e-9, "penal": penal},
                  rmin=rmin, 
                  ft=ft, 
-                 filter_kw={"beta": 1,
-                            "beta_scale": 2,
-                            "beta_limit": 512,
-                            "beta_update": 50, 
+                 l = 0.5,
+                 filter_kw={"beta": 4,
                             "volfrac": volfrac},
                  filter_mode="matrix",
-                 optimizer="mma",
-                 assembly_mode="full",
+                 optimizer="mma", optimizer_kw=optimizer_kw,
+                 lin_solver_kw = {"name": "cvxopt-cholmod"},
+                 assembly_mode="lower",
                  nouteriter=2000,
                  bcs=mbb_2d,
                  #body_forces_kw={"density_coupled": np.array([0,-0.01])},
@@ -72,4 +78,13 @@ if __name__ == "__main__":
                               "write_log": write_log,
                               "profile": False,
                               "verbosity": 20,
-                              "output_movie": False})
+                              "output_movie": False}, 
+                 convergence_kw = {"conv_tol": 1e-2,
+                                   "change_func": norm_design_change,
+                                   "ord": 2},
+                 continuation_kw = {"funcs": [beta_scaling],
+                                    "func_kws": [{"beta_scale": 2,
+                                                  "beta_limit": 64,
+                                                  "beta_update": 100,
+                                                  "state": {}}]},
+                 )

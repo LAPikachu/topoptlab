@@ -112,12 +112,17 @@ def compliance_squarederror(xPhys: np.ndarray,
     #dc = 2*delta * (-1) * penal*xPhys**(penal-1)*(Amax-Amin)*ce
     return obj, -u * (c-c0), True 
 
-def volume(xPhys: np.ndarray, 
-           el_vols: Union[float,np.ndarray],
-           **kwargs: Any) -> Tuple[float,np.ndarray,bool]:
+def vol_frac(xPhys: np.ndarray, 
+             el_vols: Union[None,float,np.ndarray] = None,
+             **kwargs: Any) -> Tuple[float,np.ndarray,bool]:
     """
     """
-    return (xPhys*el_vols).sum(axis=0)
+    if el_vols is None:
+        return xPhys.mean(), np.full(xPhys.shape[0],1/xPhys.shape[0]), None
+    else:
+        raise NotImplementedError("Volume fraction objective is implemented for irregular meshes, but not yet tested")
+        vol = el_vols.sum()
+        return (xPhys*el_vols).sum(axis=0) / vol, el_vols/vol, None 
 
 def var_maximization(u: np.ndarray, 
                      l: np.ndarray, 

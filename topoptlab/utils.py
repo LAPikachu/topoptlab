@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from warnings import warn
-from typing import Any,Dict,List,Tuple,Union
+from typing import Any, Callable, Dict, List, Tuple, Union
 from itertools import chain
 
 import numpy as np
@@ -21,17 +21,19 @@ def default_outputkw() -> Dict:
     Keys and Default Values 
     -----------------------
 
-    +------------------+-------+-----------+---------------------------------------------+
-    | Key              | Type  | Default   | Description                                 |
-    +------------------+-------+-----------+---------------------------------------------+
-    | "file"           | str   | "topopt"  | Base name used for output files.            |
-    | "display"        | bool  | True      | Display intermediary design.                |
-    | "export"         | bool  | True      | Export final results to disk as VTK.        |
-    | "write_log"      | bool  | True      | Write a log file.                           |
-    | "profile"        | bool  | False     | Profile code execution.                     |
-    | "output_movie"   | bool  | False     | Generate a movie of intermediate designs.   |
-    | "verbosity"      | int   | 20        | Level of verbosity (see SimpleLogger).      |
-    +------------------+-------+-----------+---------------------------------------------+
+    +------------------+-------+--------------------------+---------------------------------------------+
+    | Key              | Type  | Default                  | Description                                 |
+    +------------------+-------+--------------------------+---------------------------------------------+
+    | "file"           | str   | "topopt"                 | Base name used for output files.            |
+    | "display"        | bool  | True                     | Display intermediary design.                |
+    | "export"         | bool  | True                     | Export final results to disk as VTK.        |
+    | "write_log"      | bool  | True                     | Write a log file.                           |
+    | "profile"        | bool  | False                    | Profile code execution.                     |
+    | "output_movie"   | bool  | False                    | Generate a movie of intermediate designs.   |
+    | "verbosity"      | int   | 20                       | Level of verbosity (see SimpleLogger).      |
+    | "save_pdf"       | bool  | False                    | Save final design as pdf.                   |
+    | "pdf_kw"         | dict  | {"bbox_inches": "tight"} | Save final design as pdf.                   |
+    +------------------+-------+--------------------------+---------------------------------------------+
 
 
     Returns
@@ -46,7 +48,163 @@ def default_outputkw() -> Dict:
             "write_log": True,
             "profile": False,
             "output_movie": False,
-            "verbosity": 20}
+            "verbosity": 20, 
+            "save_pdf": False, 
+            "pdf_kw": {"bbox_inches": "tight"}}
+
+def default_el_flags_policy() -> Dict:
+    """
+    Return the default policy dictionary for passive/active element handling
+    in topology_optimization.main().
+
+    Keys and Default Values
+    -----------------------
+
+    +---------------------+------+---------+----------------------------------------------------+
+    | Key                 | Type | Default | Description                                        |
+    +---------------------+------+---------+----------------------------------------------------+
+    | "correct_forward"   | bool | True    | After the forward filter, restore prescribed       |
+    |                     |      |         | densities (passive→0, active→1) so that passive/  |
+    |                     |      |         | active elements do not bleed into free neighbours. |
+    | "correct_backward"  | bool | True    | After the backward filter, zero the objective and  |
+    |                     |      |         | constraint sensitivities at prescribed elements so |
+    |                     |      |         | their fixed state does not contaminate neighbours. |
+    | "neglect_in_filter" | bool | True    | Prescribed elements neither receive nor contribute |
+    |                     |      |         | density/sensitivity to their neighbours during     |
+    |                     |      |         | filtering.                                         |
+    +---------------------+------+---------+----------------------------------------------------+
+
+    Returns
+    -------
+    el_flags_policy : dict
+    """
+    return {"correct_forward":   True,
+            "correct_backward":  True,
+            "neglect_in_filter": True}
+
+
+def check_el_flags_policy(el_flags_policy: Dict) -> None:
+    """
+    Insert any missing keys into ``el_flags_policy`` using the defaults from
+    ``default_el_flags_policy()``.
+
+    Parameters
+    ----------
+    el_flags_policy : dict
+        policy dictionary, modified in-place.
+
+    Returns
+    -------
+    None
+    """
+    default_kw = default_el_flags_policy()
+    missing_keys = set(default_kw.keys()) - set(el_flags_policy.keys())
+    for key in missing_keys:
+        el_flags_policy[key] = default_kw[key]
+    return
+
+
+def default_constraint_kw() -> Dict:
+    """
+    Return the default values for optional keys in a constraint dict.
+
+    Keys and Default Values
+    -----------------------
+    "kw"        : {}      — keyword arguments forwarded to the constraint function.
+    "filter"    : True    — whether constraint sensitivities are filtered.
+    "normalize" : False   — whether to normalize value and gradient.
+    "norm_ref"  : None    — explicit normalization reference; if None, use
+                            max(|value|, delta) with delta from this function.
+    "eps"       : 1e-6    — tolerance used when splitting an equality constraint
+                            into two inequalities.
+    "norm_delta": 1e-6    — floor used for auto-normalization to avoid
+                            division by zero.
+
+    Returns
+    -------
+    dict
+    """
+    return {"kw":          {},
+            "filter":      True,
+            "normalize":   False,
+            "norm_ref":    None,
+            "eps":         1e-6,
+            "norm_delta":  1e-6,
+            "scale_factor": None}
+
+def check_constraint(c: Dict) -> None:
+    """
+    Validate a single constraint dict and fill in missing optional keys from
+    ``default_constraint_kw()``.
+
+    Required keys: "name", "func", "type", "value".
+
+    Parameters
+    ----------
+    c : dict
+        constraint specification, modified in-place.
+
+    Returns
+    -------
+    None
+    """
+    for key in ("name", "func", "type", "value"):
+        if key not in c:
+            raise ValueError(f"Constraint is missing required key: '{key}'.")
+    if c["type"] not in ("leq", "geq", "eq"):
+        raise ValueError(f"Constraint 'type' must be 'leq', 'geq', or 'eq', "
+                         f"got '{c['type']}'.")
+    defaults = default_constraint_kw()
+    for key, val in defaults.items():
+        if key not in c:
+            c[key] = val
+    return
+
+def check_constraints(constraints: List) -> None:
+    """
+    Validate and fill defaults for a list of constraint dicts in-place.
+
+    Parameters
+    ----------
+    constraints : list of dict
+
+    Returns
+    -------
+    None
+    """
+    for c in constraints:
+        check_constraint(c)
+    return
+
+def expand_eq_constraints(constraints: List) -> List:
+    """
+    Replace each equality constraint with two inequality constraints so that
+    the rest of the pipeline only ever handles leq and geq.  Each eq entry is
+    removed from the output and replaced by:
+
+        c(x) = value  →  c(x) ≤ value + eps   (leq)
+                         c(x) ≥ value - eps   (geq)
+
+    The input list is not modified; a new list is returned.
+
+    Parameters
+    ----------
+    constraints : list of dict
+        validated constraint dicts (call check_constraints first).
+
+    Returns
+    -------
+    expanded : list of dict
+        constraint list containing only leq and geq entries.
+    """
+    expanded = []
+    for c in constraints:
+        if c["type"] == "eq":
+            expanded.append({**c, "type": "leq", "value": c["value"] + c["eps"]})
+            expanded.append({**c, "type": "geq", "value": c["value"] - c["eps"]})
+        else:
+            expanded.append(c)
+    return expanded
 
 def check_output_kw(output_kw: Dict) -> None:
     """
@@ -338,17 +496,72 @@ def map_voxeltoel(voxel: np.ndarray,
     voxel = voxel.transpose((0,2,1)+tuple(range(3,len(voxel.shape))))
     return voxel.reshape(shape)
 
+def check_meshdata(l : Union[float,List, np.ndarray],
+                   g : Union[float, List, np.ndarray],
+                   ndim : int,
+                   ) -> Tuple[np.ndarray,np.ndarray]:
+    """
+    Validate and normalize mesh geometry inputs.
+
+    This helper function converts the element length input `l` and the
+    angle input `g` into one-dimensional NumPy arrays of the expected size
+    for a mesh of dimension `ndim`.
+
+    Parameters
+    ----------
+    l : float or list or np.ndarray
+        element side lengths. Can be provided as a single float (every 
+        dimension same), a list or a np.ndarray of shape/length `(ndim,)`.
+    g : float or list or np.ndarray
+        element angles. Can be provided as a single float (every 
+        angle same), a list or a np.ndarray of shape/length `(ndim-1)`.
+    ndim : int
+        spatial dimension of the mesh.
+
+    Returns
+    -------
+    l : np.ndarray
+        element side lengths with shape `(ndim,)`.
+    g : np.ndarray
+        array of element angles with shape `(ndim - 1,)`.
+    """
+    if isinstance(l, float):
+        l = np.asarray([l for i in range(ndim)])
+    elif isinstance(l, list):
+        l = np.asarray(l)[:ndim]
+    if isinstance(l, np.ndarray):
+        if not (len(l.shape) == 1 and l.shape[0] == ndim):
+            raise ValueError("l must be of shape ndim. Current ndim: ", ndim, 
+                             "Current shape of l: ", l.shape)
+    else:
+        raise TypeError("l must be float, list or np.ndarray. Current type: ", 
+                        type(l))
+    #
+    if isinstance(g, float):
+        g = np.asarray([g for i in range(ndim-1)])
+    elif isinstance(g, list):
+        g = np.asarray(g)[:ndim-1]
+    if isinstance(g, np.ndarray):
+        if not (len(g.shape) == 1 and g.shape[0] == ndim-1):
+            raise ValueError("g must be of shape ndim-1. Current ndim: ", ndim, 
+                             "Current shape of g: ", g.shape)
+    else:
+        raise TypeError("g must be float, list or np.ndarray. Current type: ", 
+                        type(g))
+    return l, g
+
 def elid_to_coords(el: np.ndarray, 
                    nelx: int, nely: int, nelz: Union[None,int] = None,
-                   l: Union[float,List] = [1.,1.,1.],
+                   l: Union[float,List, np.ndarray] = [1.,1.,1.],
+                   g: Union[float, List, np.ndarray] = [0.,0.], 
                    **kwargs: Any) -> np.ndarray:
     """
     Map element IDs to cartesian coordinates in the usual regular grid.
 
     Parameters
     ----------
-    el : np.ndarray, shape (n)
-        element IDs.
+    el : np.ndarray
+        element IDs of shape (nel).
     nelx : int
         number of elements in x direction.
     nely : int
@@ -356,39 +569,52 @@ def elid_to_coords(el: np.ndarray,
     nelz : int or None
         number of elements in z direction.
     l : float or list 
-        side length of element
+        side length of elements.
+    g : float or list 
+        angle of elements. if both angles zero, element is rectangular/cuboid.
     
     Returns
     -------
     coords : np.ndarray 
-        element coordinates of shape shape (n,ndim).
+        element coordinates of shape shape (nel,ndim).
 
     """
+    #
     if nelz is None:
         ndim = 2
     else:
         ndim = 3
     #
-    if isinstance(l, float):
-        l = [l for i in range(ndim)]
+    l,g = check_meshdata(l=l, 
+                         g=g, 
+                         ndim=ndim)
     # find coordinates of each element/density
     if ndim == 2:
         x,y = np.divmod(el,nely) # same as np.floor(el/nely),el%nely
         coords = (np.array([[0,nely-1]])-np.column_stack((x,y)))
-        #coords = coords * np.array([[-1,1]]) * np.array(l)[None,:ndim] 
+        
     else:
         z,rest = np.divmod(el,nelx*nely)
         x,y = np.divmod(rest,nely)
-        coords = (np.array([[0,nely-1,0]])-np.column_stack((x,y,z)))
-        #coords = coords * np.array([[-1,1,1]]) * np.array(l)[None,:] 
-    return coords * np.array([[-1,1,-1]])[:,:ndim] * np.array(l)[None,:ndim] 
+        coords = (np.array([[0,nely-1,0]])-np.column_stack((x,y,z))) 
+    #
+    R = np.eye(ndim)
+    R[0,1:] = np.tan(g)
+    #
+    scale_flip = np.array([[-1,1,-1]])[:,:ndim]*np.array(l)[None,:ndim]
+    return coords*scale_flip@R.T
     
 def nodeid_to_coords(nd: np.ndarray, 
-                     nelx: int, nely: int, nelz: Union[None,int] = None,
+                     nelx: int, 
+                     nely: int, 
+                     nelz: Union[None,int] = None,
                      l: Union[float,List] = [1.,1.,1.],
+                     g: Union[float, List, np.ndarray] = [0.,0.], 
                      **kwargs: Any) -> np.ndarray:
     """
-    Map node IDs to cartesian coordinates in the usual regular grid.
+    Map node IDs to cartesian coordinates in the usual regular grid. Node 
+    coordinates by convention start from -0.5*l_i (sidelength of element in the 
+    respective dimension). 
 
     Parameters
     ----------
@@ -402,6 +628,8 @@ def nodeid_to_coords(nd: np.ndarray,
         number of elements in z direction.
     l : float or List
         side length of element
+    g : float or list 
+        angle of elements. if both angles zero, element is rectangular/cuboid.
         
     Returns
     -------
@@ -414,19 +642,24 @@ def nodeid_to_coords(nd: np.ndarray,
     else:
         ndim = 3
     #
-    if isinstance(l, float):
-        l = [l for i in range(ndim)]
+    l,g = check_meshdata(l=l, 
+                         g=g, 
+                         ndim=ndim)
     # find coordinates of each element/density
     if nelz is None:
         x,y = np.divmod(nd,nely+1) # same as np.floor(el/nely),el%nely
-        coords = np.array([[1,nely]])-np.column_stack((x,y))-0.5
-        #coords = coords * np.array([[-1,1]]) * np.array(l)[None,:]
+        coords = np.array([[1,nely]])-np.column_stack((x,y))
     else:
         z,rest = np.divmod(nd,(nelx+1)*(nely+1))
         x,y = np.divmod(rest,(nely+1))
-        coords = np.array([[1,nely,1]])-np.column_stack((x,y,z))-0.5
-        #coords = coords * np.array([[-1,1,1]]) * np.array(l)[None,:]
-    return coords * np.array([[-1,1,-1]])[:,:ndim] * np.array(l)[None,:ndim]
+        coords = np.array([[1,nely,1]])-np.column_stack((x,y,z))
+    #
+    R = np.eye(ndim)
+    R[0,1:] = np.tan(g)
+    #
+    scale_flip = np.array([[-1,1,-1]])[:,:ndim]*np.array(l)[None,:ndim]
+    #
+    return (coords-0.5)*scale_flip@R.T
 
 def upsampling(x: np.ndarray, magnification: Union[float,int,List],
                nelx: int, nely: int, nelz: Union[None,int] = None,

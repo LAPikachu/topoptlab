@@ -4,7 +4,8 @@ from typing import Any, Dict, Union
 import numpy as np
 
 from topoptlab.filter.filter import TOFilter
-from topoptlab.filter.haeviside_projection import find_eta, eta_projection, eta_projection_dx
+from topoptlab.filter.haeviside_projection import find_eta, eta_projection, eta_projection_dx,\
+                                                  find_multieta, multieta_projection, multieta_projection_dx
 
 class HaevisideProjectorGuest2004(TOFilter):
     """
@@ -86,37 +87,37 @@ class HaevisideProjectorGuest2004(TOFilter):
         """
         return 1 - np.exp(-beta*x) + x*np.exp(-beta)
     
-    def apply_filter_dx(self, 
-                        x_filtered : np.ndarray, 
+    def apply_filter_dx(self,
+                        x : np.ndarray,
                         dx_filtered : np.ndarray,
                         beta : float,
                         **kwargs: Any) -> np.ndarray:
         """
-        Apply filter to the sensitivities with respect to filtered variables 
-        x_filtered using the chain rule assuming 
-        
-            x_filtered = 1 - exp(-beta x) + x exp(-beta) 
-        
-        to get the sensitivities with respect to the (unfiltered) design 
+        Apply filter to the sensitivities with respect to filtered variables
+        x_filtered using the chain rule assuming
+
+            x_filtered = 1 - exp(-beta x) + x exp(-beta)
+
+        to get the sensitivities with respect to the (unfiltered) design
         variables or in the case of many filters intermediate design variables:
-            
-            dx = beta*np.exp(-beta*x_filtered) + np.exp(-beta)
-        
+
+            dx = dx_filtered * (beta*exp(-beta*x) + exp(-beta))
+
         Parameters
         ----------
-        x_filtered : np.ndarray
-            filtered design variables.
+        x : np.ndarray
+            unfiltered design variables.
         dx_filtered : np.ndarray
             sensitivities with respect to filtered design variables.
         beta : float
             projection strength.
-            
+
         Returns
         -------
         dx : np.ndarray
             design sensitivities with respect to un-filtered design variables.
         """
-        return ( beta*np.exp(-beta*x_filtered) + np.exp(-beta) )*dx_filtered
+        return dx_filtered * (beta*np.exp(-beta*x) + np.exp(-beta))
     
     @property
     def vol_conserv(self) -> bool:
@@ -151,6 +152,13 @@ class HaevisideProjectorGuest2004(TOFilter):
         constraint_filter_mask : np.ndarray of shape (n_constr,)
         """
         return self._constraint_filter_mask
+
+    @property
+    def changes_filter_kw(self) -> bool:
+        return False
+
+    def update_filter_kw(self, filter_kw: dict) -> None:
+        return
 
 class HaevisideProjectorSigmund2007(TOFilter):
     """
@@ -231,37 +239,37 @@ class HaevisideProjectorSigmund2007(TOFilter):
         """
         return np.exp(beta*(x-1)) - (1-x)*np.exp(-beta)
     
-    def apply_filter_dx(self, 
-                        x_filtered : np.ndarray, 
+    def apply_filter_dx(self,
+                        x : np.ndarray,
                         dx_filtered : np.ndarray,
                         beta : float,
                         **kwargs: Any) -> np.ndarray:
         """
-        Apply filter to the sensitivities with respect to filtered variables 
-        x_filtered using the chain rule assuming 
-        
+        Apply filter to the sensitivities with respect to filtered variables
+        x_filtered using the chain rule assuming
+
             x_filtered = np.exp(beta*(x-1)) - (1-x)*np.exp(-beta)
-        
-        to get the sensitivities with respect to the (unfiltered) design 
+
+        to get the sensitivities with respect to the (unfiltered) design
         variables or in the case of many filters intermediate design variables:
-            
-            dx = beta*np.exp(-beta*x_filtered) + np.exp(-beta)
-        
+
+            dx = dx_filtered * (beta*exp(beta*(x-1)) + exp(-beta))
+
         Parameters
         ----------
-        x_filtered : np.ndarray
-            filtered design variables.
+        x : np.ndarray
+            unfiltered design variables.
         dx_filtered : np.ndarray
             sensitivities with respect to filtered design variables.
         beta : float
             projection strength.
-            
+
         Returns
         -------
         dx : np.ndarray
             design sensitivities with respect to un-filtered design variables.
         """
-        return np.exp(beta*(x_filtered-1)) * beta + np.exp(-beta)*dx_filtered
+        return dx_filtered * (np.exp(beta*(x-1)) * beta + np.exp(-beta))
     
     @property
     def vol_conserv(self) -> bool:
@@ -296,6 +304,13 @@ class HaevisideProjectorSigmund2007(TOFilter):
         constraint_filter_mask : np.ndarray of shape (n_constr,)
         """
         return self._constraint_filter_mask
+
+    @property
+    def changes_filter_kw(self) -> bool:
+        return False
+
+    def update_filter_kw(self, filter_kw: dict) -> None:
+        return
 
 
 class EtaProjectorXu2010(TOFilter):
@@ -481,3 +496,162 @@ class EtaProjectorXu2010(TOFilter):
         constraint_filter_mask : np.ndarray of shape (n_constr,)
         """
         return self._constraint_filter_mask
+
+    @property
+    def changes_filter_kw(self) -> bool:
+        return True
+
+    def update_filter_kw(self, filter_kw: dict) -> None:
+        filter_kw["eta"] = self.eta
+
+class MultiEtaProjectorXu2010(TOFilter):
+    """
+    Multi-threshold Heaviside projection based on
+
+    Xu S, Cai Y, Cheng G (2010) Volume preserving nonlinear density filter
+    based on Heaviside functions. Struct Multidiscip Optim 41:495-505
+
+    Applies N independent projections at thresholds ``etas`` and combines
+    them into a single scalar field via a weighted sum:
+
+        x_filtered = sum_n w_n * H_{beta, eta_n}(x)
+
+    where each H_{beta, eta_n} is the single-threshold tanh projection.
+    This allows smooth multi-phase interpolation from a single design field.
+
+    When ``volfrac`` is provided the thresholds are updated each call via
+    ``find_multieta`` (MSE-minimising, volume-constrained optimisation) to
+    keep the projected volume fraction close to the target.
+    """
+
+    def __init__(self,
+                 n_constr: int,
+                 volfrac: Union[None, float],
+                 n_etas: int,
+                 weights: Union[None, np.ndarray] = None,
+                 filter_objective: bool = True,
+                 constraint_filter_mask: Union[None, np.ndarray] = None,
+                 etas: Union[None, np.ndarray] = None,
+                 **kwargs: Any) -> None:
+        """
+        Parameters
+        ----------
+        n_constr : int
+            number of constraints.
+        volfrac : None or float
+            target volume fraction. If not None, ``etas`` are updated each
+            call to ``apply_filter`` via ``find_multieta``.
+        n_etas : int
+            number of threshold values.
+        weights : None or np.ndarray of shape (n_etas,)
+            combination weights. Uniform weights are used when None.
+        filter_objective : bool
+            if True, filter is applied to objective sensitivities.
+        constraint_filter_mask : None or np.ndarray of shape (n_constr,)
+            if None, filter is applied to all constraint sensitivities.
+        etas : None or np.ndarray of shape (n_etas,)
+            initial threshold values. Defaults to n_etas equally spaced
+            values in (0, 1) when None.
+        """
+        if etas is None:
+            self.etas = np.linspace(0.0, 1.0, n_etas + 2)[1:-1]
+        else:
+            self.etas = np.asarray(etas, dtype=float)
+        if weights is None:
+            self.weights = np.ones(n_etas) / n_etas
+        else:
+            self.weights = np.asarray(weights, dtype=float)
+        self._vol_conserv = volfrac is not None
+        self._filter_objective = filter_objective
+        if constraint_filter_mask is None:
+            self._constraint_filter_mask = np.ones(n_constr, dtype=bool)
+        elif isinstance(constraint_filter_mask, np.ndarray) and \
+                constraint_filter_mask.shape == (n_constr,):
+            self._constraint_filter_mask = constraint_filter_mask
+        else:
+            raise TypeError("constraint_filter_mask must be None or np.ndarray of shape (n_constr,).")
+
+    def apply_filter(self,
+                     x: np.ndarray,
+                     beta: float,
+                     volfrac: Union[None, float] = None,
+                     find_multieta_kw: Dict = {"mode": "mse"},
+                     **kwargs: Any) -> np.ndarray:
+        """
+        Apply the multi-threshold projection to ``x``.
+
+        Parameters
+        ----------
+        x : np.ndarray
+            (intermediate) design variables.
+        beta : float
+            projection strength.
+        volfrac : None or float
+            target volume fraction. If not None, ``self.etas`` are updated
+            via ``find_multieta`` before projecting.
+        find_multieta_kw : dict
+            keyword arguments forwarded to ``find_multieta``.
+
+        Returns
+        -------
+        x_filtered : np.ndarray
+            projected design variables.
+        """
+        if volfrac is not None:
+            self.etas = find_multieta(etas0=self.etas,
+                                      xTilde=x.ravel(),
+                                      beta=beta,
+                                      volfrac=volfrac,
+                                      weights=self.weights,
+                                      **find_multieta_kw)
+        return multieta_projection(etas=self.etas,
+                                   xTilde=x,
+                                   beta=beta,
+                                   weights=self.weights)
+
+    def apply_filter_dx(self,
+                        x: np.ndarray,
+                        dx_filtered: np.ndarray,
+                        beta: float,
+                        **kwargs: Any) -> np.ndarray:
+        """
+        Chain-rule pullback of sensitivities through the multi-threshold
+        projection.
+
+        Parameters
+        ----------
+        x : np.ndarray
+            (intermediate) design variables.
+        dx_filtered : np.ndarray
+            sensitivities with respect to the projected field.
+        beta : float
+            projection strength.
+
+        Returns
+        -------
+        dx : np.ndarray
+            sensitivities with respect to ``x``.
+        """
+        return multieta_projection_dx(etas=self.etas,
+                                      xTilde=x,
+                                      beta=beta,
+                                      weights=self.weights) * dx_filtered
+
+    @property
+    def vol_conserv(self) -> bool:
+        return self._vol_conserv
+
+    @property
+    def filter_objective(self) -> bool:
+        return self._filter_objective
+
+    @property
+    def constraint_filter_mask(self) -> np.ndarray:
+        return self._constraint_filter_mask
+
+    @property
+    def changes_filter_kw(self) -> bool:
+        return True
+
+    def update_filter_kw(self, filter_kw: dict) -> None:
+        filter_kw["etas"] = self.etas

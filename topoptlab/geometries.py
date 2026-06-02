@@ -1,7 +1,151 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-from typing import Union,List
+from typing import Any, Callable, Dict, List, Union
 
 import numpy as np
+
+from topoptlab.utils import check_meshdata, elid_to_coords, nodeid_to_coords
+
+def cube_mask(coords : np.ndarray,
+              low : np.ndarray, 
+              upp : np.ndarray,
+              **kwargs : Any) -> np.ndarray:
+    """
+    Take coordinate and return mask of coordinates lying between the lower 
+    and upper boundaries.
+    
+    Parameters
+    ----------
+    coords : np.ndarray 
+        element coordinates of shape shape (ncoords,ndim).
+    low : np.ndarray
+        lower boundaries of the cuboid of shape shape (ndim).
+    upp : np.ndarray
+        upper boundaries of the cuboid of shape shape (ndim).
+    
+    Returns
+    -------
+    mask : np.ndarray 
+        mask for coordinates of shape (ncoords).
+    
+    """
+    #
+    return np.all((coords <= upp[None,:]) &\
+                  (coords >= low[None,:]), 
+                  axis=1)
+
+def elids_in_mask(el: np.ndarray,
+                  spatial_mask_fnc : Callable, 
+                  mask_kw : Dict,
+                  nelx: int, 
+                  nely: int, 
+                  nelz: Union[None,int] = None,
+                  l: Union[float,List,np.ndarray] = [1.,1.,1.],
+                  g: Union[List,np.ndarray] = [0.,0.], 
+                  **kwargs: Any) -> np.ndarray:
+    """
+    Find element IDs within an interval of cartesian coordinates in the usual 
+    regular grid. 
+
+    Parameters
+    ----------
+    el : np.ndarray
+        element IDs of shape (nel).
+    spatial_mask_fnc : callable
+        function that creates the spatial mask based on coordinates and mask_kw.
+    mask_kw : 
+        keywords for the spatial mask.
+    nelx : int
+        number of elements in x direction.
+    nely : int
+        number of elements in y direction.
+    nelz : int or None
+        number of elements in z direction.
+    l : float or list 
+        side length of elements.
+    g : float or list 
+        angle of elements. if both angles zero, element is rectangular/cuboid.
+    
+    Returns
+    -------
+    indices : np.ndarray 
+        element indices shape (n).
+
+    """
+    #
+    if nelz is None:
+        ndim = 2
+    else:
+        ndim = 3
+    #
+    l,g = check_meshdata(l=l, 
+                         g=g, 
+                         ndim=ndim)
+    # find coordinates of each element
+    coords = elid_to_coords(el = el, 
+                            nelx = nelx, 
+                            nely = nely, 
+                            nelz = nelz,
+                            l = l,
+                            g = g)
+    #
+    return np.nonzero(spatial_mask_fnc(coords=coords, **mask_kw))[0]
+
+def nodeids_in_mask(node_id: np.ndarray,
+                    spatial_mask_fnc : Callable, 
+                    mask_kw : Dict,
+                    nelx: int, 
+                    nely: int, 
+                    nelz: Union[None,int] = None,
+                    l: Union[float,List,np.ndarray] = [1.,1.,1.],
+                    g: Union[List,np.ndarray] = [0.,0.], 
+                    **kwargs: Any) -> np.ndarray:
+    """
+    Find node IDs within an interval of cartesian coordinates in the usual 
+    regular grid. 
+
+    Parameters
+    ----------
+    nd_id : np.ndarray
+        node IDs of shape (n_node).
+    spatial_mask_fnc : callable
+        function that creates the spatial mask based on coordinates and mask_kw.
+    mask_kw : 
+        keywords for the spatial mask.
+    nelx : int
+        number of elements in x direction.
+    nely : int
+        number of elements in y direction.
+    nelz : int or None
+        number of elements in z direction.
+    l : float or list 
+        side length of elements.
+    g : float or list 
+        angle of elements. if both angles zero, element is rectangular/cuboid.
+    
+    Returns
+    -------
+    indices : np.ndarray 
+        node indices shape (n).
+
+    """
+    #
+    if nelz is None:
+        ndim = 2
+    else:
+        ndim = 3
+    #
+    l,g = check_meshdata(l=l, 
+                         g=g, 
+                         ndim=ndim)
+    # find coordinates of each element
+    coords = nodeid_to_coords(nd = node_id,
+                              nelx = nelx, 
+                              nely = nely, 
+                              nelz = nelz,
+                              l = l,
+                              g = g)
+    #
+    return np.nonzero(spatial_mask_fnc(coords=coords, **mask_kw))[0]
 
 def sphere(nelx: int, nely: int, center: np.ndarray, 
            radius: float, 

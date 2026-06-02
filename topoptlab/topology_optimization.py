@@ -2,6 +2,8 @@
 from typing import Callable, Dict, List, Tuple, Union
 from functools import partial
 from cProfile import Profile
+from datetime import datetime
+import inspect
 #
 import numpy as np
 from scipy.sparse.linalg import factorized
@@ -9,8 +11,9 @@ from scipy.ndimage import convolve
 #
 from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
-# functions to create filters
-from topoptlab.filter.filter import TOFilter 
+# functions to create filters 
+from topoptlab.filter.filter import TOFilter
+from topoptlab.filter.fetch_filter import fetch_filters
 from topoptlab.filter.convolution_filter import assemble_convolution_filter
 from topoptlab.filter.helmholtz_filter import assemble_helmholtz_filter
 from topoptlab.filter.matrix_filter import assemble_matrix_filter
@@ -37,17 +40,74 @@ from topoptlab.output_designs import export_vtk
 # map element data to img/voxel
 from topoptlab.utils import map_eltoimg,map_imgtoel,map_eltovoxel,map_voxeltoel,\
                             check_simulation_params,dict_without,\
-                            default_outputkw,check_output_kw,check_optimizer_kw
+                            default_outputkw,check_output_kw,check_optimizer_kw,\
+                            default_el_flags_policy,check_el_flags_policy,\
+                            check_constraints,expand_eq_constraints
+from topoptlab.objectives import vol_frac as volume_fraction_constraint
 # logging related stuff
 from topoptlab.log_utils import EmptyLogger,SimpleLogger
+from topoptlab.convergence_criteria import max_design_change
+from topoptlab.param_continuation import run_continuation
 #
 from mmapy import mmasub
 
+def update_history(xhist: List, x: np.ndarray,
+                   xPhys_hist: Union[None, List], xPhys: np.ndarray,
+                   obj_hist: Union[None, List], obj: float,
+                   constrs_hist: Union[None, List], constrs: np.ndarray,
+                   max_history: int) -> None:
+    """
+    Append current iterate to history lists and prune to max_history+1 entries.
+
+    Parameters
+    ----------
+    xhist : list of np.ndarray
+        history of design iterates.
+    x : np.ndarray
+        current design iterate.
+    xPhys_hist : None or list of np.ndarray
+        history of physical densities, or None if not tracked.
+    xPhys : np.ndarray
+        current physical densities.
+    obj_hist : None or list of float
+        history of objective values, or None if not tracked.
+    obj : float
+        current objective value.
+    constrs_hist : None or list of np.ndarray
+        history of constraint vectors, or None if not tracked.
+    constrs : np.ndarray
+        current constraint vector.
+    max_history : int
+        maximum number of iterates to retain.
+
+    Returns
+    -------
+    None
+    """
+    # append history
+    xhist.append(x.copy())
+    if xPhys_hist is not None:
+        xPhys_hist.append(xPhys.copy())
+    if obj_hist is not None:
+        obj_hist.append(obj)
+    if constrs_hist is not None:
+        constrs_hist.append(constrs.copy())
+    # prune history
+    if len(xhist) > max_history+1:
+        del xhist[:len(xhist)-max_history-1]
+    if xPhys_hist is not None and len(xPhys_hist) > max_history+1:
+        del xPhys_hist[:len(xPhys_hist)-max_history-1]
+    if obj_hist is not None and len(obj_hist) > max_history+1:
+        del obj_hist[:len(obj_hist)-max_history-1]
+    if constrs_hist is not None and len(constrs_hist) > max_history+1:
+        del constrs_hist[:len(constrs_hist)-max_history-1]
+    return
+
 # MAIN DRIVER
-def main(nelx: int, nely: int, 
+def main(nelx: int, nely: int,
          volfrac: float, #penal: float, 
          rmin: float, 
-         ft: int = 1,
+         ft: [int,TOFilter,List[TOFilter]] = 1,
          filter_kw: Union[Dict,List] = {},
          simulation_kw: Dict = {"grid": "regular",
                                 "element order": 1,
@@ -69,13 +129,18 @@ def main(nelx: int, nely: int,
          matinterpol_dx: Callable = simp_dx,
          matinterpol_kw: Dict = {"eps": 1e-9, "penal": 3.},
          el_flags: Union[None,np.ndarray] = None,
-         optimizer: str = "mma", 
+         el_flags_policy: Union[None,Dict] = None,
+         constraints: Union[None,List[Dict]] = None,
+         optimizer: str = "mma",
          optimizer_kw: Union[None,Dict] = None,
          mix: Union[None,float] = None,
          accelerator_kw: Dict = {"accel_freq": 4,
                                  "accel_start": 20,
                                  "max_history": 0,
                                  "accelerator": None},
+         convergence_kw: Dict = {"conv_tol": 1e-2,
+                                 "change_func": max_design_change},
+         continuation_kw: Union[None, Dict] = None,
          nouteriter: int = 2000, ninneriter: int = 15,
          output_kw: Dict = default_outputkw()) -> Tuple[np.ndarray,float]:
     """
@@ -95,7 +160,7 @@ def main(nelx: int, nely: int,
     rmin : float
         cutoff radius for the filter. Only elements within the element-center
         to element center distance are used for filtering.
-    ft : int
+    ft : int or TOFilter or list
         integer flag for the filter. 0 sensitivity filtering,
         1 density filtering, -1 no filter.
     nelz : int or None
@@ -155,17 +220,63 @@ def main(nelx: int, nely: int,
         number of TO iterations
     ninneriter : int
         number of inner iterations for GCMMA.
+    convergence_kw : dict
+        dictionary controlling convergence. Supported keys are:
+
+        - ``conv_tol`` (float): tolerance on the change metric below which
+          convergence is declared. Default 1e-1.
+        - ``change_func`` (callable or None): function with signature
+          ``change_func(x, xhist) -> float`` that computes the scalar change
+          metric each iteration. If None, the default
+          ``np.abs(xhist[-1] - xhist[-2]).max()`` (inf-norm of the update) is
+          used.
+    continuation_kw : None or dict
+        dictionary controlling parameter continuation between stages. If None,
+        the loop terminates as soon as ``convergence_kw["conv_tol"]`` is
+        reached. Otherwise must contain two parallel lists:
+
+        - ``"funcs"`` : list of callables, each with signature
+          ``f(hist, change, loop, filter_kw, conv_tol, continuation_kw) -> bool``.
+        - ``"func_kws"`` : list of dicts, one per function, holding the
+          private keyword arguments for that function. Each dict is passed
+          as ``continuation_kw`` to the corresponding callable and may be
+          mutated in-place to maintain per-function state across iterations.
+
+        The loop continues as long as at least one function returns True;
+        it terminates only when all return False.
     output_kw : dict
-        dictionary containing output options.
-        
+        dictionary controlling output and logging. Missing keys are filled
+        from ``default_outputkw()``. Recognised keys:
+
+        - ``"file"``         : str  — base name for log and VTK output files
+          (default ``"topopt"``).
+        - ``"display"``      : bool — if True, the physical density field is
+          plotted to screen each iteration (default True).
+        - ``"export"``       : bool — if True, the final design is exported to
+          a VTK file via ``export_vtk`` (default True).
+        - ``"write_log"``    : bool — if True, a ``SimpleLogger`` writing to
+          ``<file>.log`` is created; otherwise an ``EmptyLogger`` is used
+          (default True).
+        - ``"verbosity"``    : int  — verbosity level passed to
+          ``SimpleLogger``; higher values produce more output (default 20).
+        - ``"profile"``      : bool — if True, ``cProfile`` is enabled for
+          the optimisation loop and results are printed on exit (default
+          False).
+        - ``"output_movie"`` : bool — if True, each iteration is exported as
+          a separate VTK file named ``<file>_<iter>.vtk``, suitable for
+          assembling a movie (default False).
+
     Returns
     -------
     None.
 
     """
+    # insert: checking_function
     # check dictionaries
     check_output_kw(output_kw)
     check_simulation_params(simulation_kw)
+    if el_flags_policy is not None:
+        check_el_flags_policy(el_flags_policy)
     # initialize profiling
     if output_kw["profile"]:
         profiler = Profile() 
@@ -189,6 +300,7 @@ def main(nelx: int, nely: int,
                            verbosity=output_kw["verbosity"])
         
         #
+        log.info(f"date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         log.info(f"optimizer {optimizer}")
         log.info(f"number of spatial dimensions: {ndim}")
         log.info("elements: "+" x ".join([f"{nelx}",f"{nely}",f"{nelz}"][:ndim]))
@@ -228,8 +340,20 @@ def main(nelx: int, nely: int,
     else:
         initialguess_keys = initial_guess.keys()
     #
-    if initialguess_keys is None or "x" not in initialguess_keys:
-        x = volfrac * np.ones( (n,1), dtype=float,order='F')
+    if (initialguess_keys is None or \
+       "x" not in initialguess_keys) and \
+       volfrac:
+        x = np.full(shape=(n,1), 
+                    fill_value=volfrac, 
+                    dtype=float, 
+                    order='F')
+    elif (initialguess_keys is None or \
+       "x" not in initialguess_keys) and \
+       volfrac is None:
+        x = np.full(shape=(n,1), 
+                    fill_value=0.5, 
+                    dtype=float, 
+                    order='F')
     else:
         x = initial_guess["x"]
     #
@@ -240,30 +364,63 @@ def main(nelx: int, nely: int,
     # intermediate filter variables
     if isinstance(ft, list):
         xTilde = []
-        for i in range(len(ft)):
+        for i in range(len(ft) - 1):
             key = f" xTilde-{i}"
             if initialguess_keys is None or key not in initialguess_keys:
                 xTilde.append(x.copy())
-            else: 
+            else:
                 xTilde.append(initial_guess[key])
+    else:
+        xTilde = None
+    # precompute prescribed-element masks for filter policy corrections
+    passive_mask    = None
+    active_mask     = None
+    prescribed_mask = None
+    if el_flags is not None:
+        passive_mask    = el_flags == 1
+        active_mask     = el_flags == 2
+        prescribed_mask = el_flags != 0
     # initialize arrays for gradients
     dobj = np.zeros( x.shape,order="F")
-    # initialize constraints
-    n_constr = 0
+    # build and validate constraint list
+    if constraints is None:
+        constraints = []
+    # legacy: if volfrac is given, prepend the volume fraction inequality
     if volfrac is not None:
-        n_constr += 1
-    constrs = np.zeros( (n_constr, 1) )
+        constraints = [{"name": "volume fraction",
+                        "func": volume_fraction_constraint,
+                        "type": "leq",
+                        "value": volfrac,
+                        "kw":   {}}] + list(constraints)
+    # fill missing optional keys and check types
+    check_constraints(constraints)
+    # MMA/GCMMA only handle inequalities: split equality constraints into two
+    # inequalities upfront so the rest of the pipeline only ever sees leq/geq
+    if optimizer in ["mma", "gcmma"]:
+        constraints = expand_eq_constraints(constraints)
+    n_constr = len(constraints)
+    # build filter mask: one bool per constraint row
+    _constr_filter_mask = np.array([c["filter"] for c in constraints], dtype=bool)
+    constrs  = np.zeros( (n_constr, 1) )
     dconstrs = np.zeros( (n, n_constr) )
     # initialize history length needed for optimizer
     optimizer_kw = check_optimizer_kw(optimizer=optimizer,
                                       n=x.shape[0],
                                       ft=ft,
-                                      n_constr=1,
+                                      n_constr=n_constr,
                                       optimizer_kw=optimizer_kw)
-    if optimizer in ["oc","ocm","ocg"]:
+    if optimizer in ["oc","ocm"]:
+        # legacy OC: only a single constraint (volume fraction) is supported
+        if n_constr != 1:
+            raise ValueError(
+                f"Optimizers 'oc' and 'ocm' support exactly one constraint, "
+                f"got {n_constr}.")
         # must be initialized to use the NGuyen/Paulino OC approach
         g = 0
-        #
+        max_history = 2
+    elif optimizer == "ocg":
+        # must be initialized to use the NGuyen/Paulino OC approach
+        g = 0
         max_history = 2
     elif optimizer in ["mma","gcmma"]:
         # mma needs results of the two previous iterations
@@ -274,14 +431,21 @@ def main(nelx: int, nely: int,
             mask = el_flags == 1
             optimizer_kw["xmin"][mask] = 0.
             optimizer_kw["xmax"][mask] = 0.+1e-9
-            x[mask,0] = 1.
-            xPhys[mask,0] = 1.
+            x[mask,0] = 0.
+            xPhys[mask,0] = 0.
             # active
             mask = el_flags == 2
             optimizer_kw["xmin"][mask] = 1.- 1e-9
             optimizer_kw["xmax"][mask] = 1.
             x[mask] = 1.
             xPhys[mask] = 1.
+            # redistribute volfrac over free elements so that passive elements
+            # (contributing 0) add material to the free set
+            if volfrac is not None:
+                n_free = (~prescribed_mask).sum()
+                x_free = np.clip(volfrac * n / n_free, 0., 1.)
+                x[~prescribed_mask, 0]     = x_free
+                xPhys[~prescribed_mask, 0] = x_free
     else:
         raise ValueError("Unknown optimizer: ", optimizer)
     # get element stiffness matrix
@@ -366,14 +530,47 @@ def main(nelx: int, nely: int,
                  filter_mode=filter_mode,
                  rmin=rmin,
                  n_constr=n_constr,
+                 l=l,
+                 el_flags=el_flags,
+                 el_flags_policy=el_flags_policy,
                  **filter_kw)]
     elif isinstance(ft, list):
         ft = [ft_obj(nelx=nelx,nely=nely,nelz=nelz,
                      filter_mode=filter_mode,
                      rmin=rmin,
                      n_constr=n_constr,
+                     l=l,
+                     el_flags=el_flags,
+                     el_flags_policy=el_flags_policy,
                      **filter_kw) \
               for ft_obj in ft]
+    elif isinstance(ft, int) and ft == 0:
+        # convert integer ft code to list of TOFilter objects
+        # NOTE: temporary — all filters share the same kw; in general each
+        # filter may receive its own keyword dict via filter_args
+        _ft_kw = dict(nelx=nelx, nely=nely, nelz=nelz,
+                      filter_mode=filter_mode,
+                      rmin=rmin,
+                      n_constr=n_constr,
+                      l=l,
+                      el_flags=el_flags,
+                      el_flags_policy=el_flags_policy,
+                      **filter_kw)
+        ft = fetch_filters(ft=ft, filter_args=[_ft_kw, _ft_kw])
+    elif isinstance(ft, int) and ft >= 1:
+        # convert integer ft code to list of TOFilter objects
+        # NOTE: temporary — all filters share the same kw; in general each
+        # filter should receive its own keyword dict via filter_args
+        _ft_kw = dict(nelx=nelx, nely=nely, nelz=nelz,
+                      filter_mode=filter_mode,
+                      rmin=rmin,
+                      n_constr=n_constr,
+                      l=l,
+                      constraint_filter_mask=_constr_filter_mask,
+                      el_flags=el_flags,
+                      el_flags_policy=el_flags_policy,
+                      **filter_kw)
+        ft = fetch_filters(ft=ft, filter_args=[_ft_kw, _ft_kw])
     # Filter: Build (and assemble) the index+data vectors for the coo matrix format
     elif filter_mode == "matrix":
         H,Hs = assemble_matrix_filter(nelx=nelx,nely=nely,nelz=nelz,
@@ -431,23 +628,34 @@ def main(nelx: int, nely: int,
     #
     if output_kw["output_movie"]:
         output_kw["mov_ndigits"] = len(str(nouteriter))
-    # initialize iteration history
-    if max_history and accelerator_kw is None:
-        xhist = [x.copy() for i in np.arange(max_history)]
-    elif max_history >= accelerator_kw["max_history"]:
-        xhist = [x.copy() for i in np.arange(max_history)]
-    elif max_history < accelerator_kw["max_history"]:
-        xhist = [x.copy() for i in np.arange(accelerator_kw["max_history"])]
+    # initialize iteration history by copying initial guesses
+    max_history = int(np.maximum(max_history,
+                                 accelerator_kw.get("max_history", 0)))
+    # check if history of xPhys is needed
+    _cont_params = [inspect.signature(f).parameters
+                    for f in (continuation_kw["funcs"]
+                              if continuation_kw is not None else [])]
+    _need_xPhys_hist = any("xPhys_hist" in p for p in _cont_params)
+    if not _need_xPhys_hist and "mode" in convergence_kw.keys():
+        _need_xPhys_hist = convergence_kw["mode"] == "xPhys"
+    if continuation_kw is not None:
+        continuation_kw["stop_flag"] = [False] * len(continuation_kw["funcs"])
+    hist = {"xhist":        [x.copy() for i in np.arange(max_history)],
+            "xPhys_hist":   [xPhys.copy() for i in np.arange(max_history)]
+                            if _need_xPhys_hist else None,
+            "obj_hist":     [0. for i in np.arange(max_history)],
+            "constrs_hist": [constrs.copy() for i in np.arange(max_history)]}
     # initialize adjoint variables
     adj = np.zeros(f.shape)
+    # seed filter_kw with any initial filter state (e.g. eta from EtaProjectorXu2010)
+    if isinstance(ft, list):
+        for _f in ft:
+            if _f.changes_filter_kw:
+                _f.update_filter_kw(filter_kw)
     #
-    if "beta" in filter_kw.keys():
-        filter_kw["beta_loop"] = 0
     # optimization loop
     for loop in np.arange(nouteriter):
         #
-        if "beta_loop" in filter_kw.keys():
-            filter_kw["beta_loop"] += 1 
         # solve FEM, calculate obj. func. and gradients.
         if optimizer in ["oc","mma", "ocm","ocg"] or\
            (optimizer in ["gcmma"] and ninneriter==0) or\
@@ -515,7 +723,10 @@ def main(nelx: int, nely: int,
                                                 **obj_kw)
                 # if problem not self adjoint, solve for adjoint variables and
                 # calculate derivatives, else use analytical solution
-                if self_adj:
+                if self_adj is None:
+                    dobj[:,0] += rhs_adj 
+                    break
+                elif self_adj:
                     #dobj[:] += rhs_adj
                     adj[free,i] = rhs_adj[free,0]
                 else:
@@ -529,7 +740,7 @@ def main(nelx: int, nely: int,
                                            preconditioner=preconditioner,
                                            preconditioner_kw=preconditioner_kw)
                 # update sensitivity for quantities that need a small offset to
-                # avoid degeneracy of the FE problem
+                # avoid degeneracy of the FE pro i need to add a continue after this I guess?blem
                 # standard contribution of element stiffness/conductivity
                 dobj_offset = np.matvec(KE,u[edofMat,i])
                 # contribution due to force induced by strain
@@ -552,15 +763,72 @@ def main(nelx: int, nely: int,
         # optimizer is unknown.
         else:
             raise NotImplementedError("Unknown optimizer.")
-        # Constraints and constraint gradients
-        constrs[:,0] = 0.
+        # Constraints, constraint gradients and adjoint analysis
+        constrs[:,:] = 0.
         dconstrs[:,:] = 0.
-        if volfrac is not None:
-            constrs[0,0] = xPhys.mean() - volfrac
-            if optimizer in ["mma","gcmma"]:
-                dconstrs[:,0:1] = np.full(x.shape,1/x.shape[0])
-            elif optimizer in ["oc","ocm","ocg"]:
-                dconstrs[:,0] = np.ones(x.shape[0])
+        for k, c in enumerate(constraints):
+            val = 0.
+            dconstr = np.zeros(x.shape, order="F")
+            for j in np.arange(f.shape[1]):
+                val, rhs_adj_c, self_adj_c = c["func"](obj=val,
+                                                       i=j,
+                                                       xPhys=xPhys,
+                                                       u=u,
+                                                       KE=KE,
+                                                       edofMat=edofMat,
+                                                       Kes=Kes,
+                                                       matinterpol=matinterpol,
+                                                       matinterpol_kw=matinterpol_kw,
+                                                       cellVolume=cellVolume,
+                                                       **c["kw"])
+                # depends only on xPhys or any design variable: rhs_adj_c is already the gradient
+                if self_adj_c is None:
+                    dconstr[:,0] += rhs_adj_c.ravel()
+                    break
+                # self adjoint 
+                elif self_adj_c:
+                    adj[free,j] = rhs_adj_c[free,0]
+                # adjoint problem needs to be solved
+                else:
+                    adj[free,j:j+1],_,_ = solve_lin(K,
+                                               rhs=rhs_adj_c[free,j:j+1],
+                                               rhs0=adj[free,j:j+1],
+                                               solver=lin_solver,
+                                               solver_kw=lin_solver_kw,
+                                               factorization=fact,
+                                               P=precond,
+                                               preconditioner=preconditioner,
+                                               preconditioner_kw=preconditioner_kw)
+                # accumulate sensitivity via chain rule through material interpolation
+                dconstr_offset = np.matvec(KE, u[edofMat,j])
+                if "strain_uniform" in body_forces_kw.keys():
+                    dconstr_offset -= fe_strain[None,:,j]
+                if f0 is not None:
+                    dconstr_offset -= f0[None,:,j]
+                dconstr[:,0] += (matinterpol_dx(xPhys=xPhys, **matinterpol_kw)*\
+                                 adj[edofMat,j]*dconstr_offset).sum(axis=1)
+                if "density_coupled" in body_forces_kw.keys():
+                    dconstr[:,0] -= simp_dx(xPhys=xPhys, eps=0., penal=1.)[:,0]*\
+                                    np.dot(adj[edofMat,j],fe_dens[:,j])
+            # apply constraint type sign
+            if c["type"] == "leq":
+                constrs[k, 0] = val - c["value"]
+                dconstrs[:, k:k+1] = dconstr
+            elif c["type"] == "geq":
+                constrs[k, 0] = c["value"] - val
+                dconstrs[:, k:k+1] = -dconstr
+            elif c["type"] == "eq":
+                constrs[k, 0] = val - c["value"]
+                dconstrs[:, k:k+1] = dconstr
+        # optionally normalize each constraint row by a reference value
+        for k, constraint in enumerate(constraints):
+            if constraint["normalize"]:
+                if constraint["norm_ref"] is None: 
+                    ref = np.maximum(abs(c["value"]), c["norm_delta"])
+                else:
+                    ref = constraint["norm_ref"]
+                constrs[k, 0] = constrs[k, 0]/ref
+                dconstrs[:, k:k+1] = dconstrs[:, k:k+1]/ref
         #
         log.debug("Pre-Sensitivity Filter: it.: {0}, min(dobj): {1:.10f}, max(dobj): {2:.10f}, dv: {3:.10f}".format(
                   loop, 
@@ -623,36 +891,62 @@ def main(nelx: int, nely: int,
             dobj[:] = TF.T @ lu_solve(TF@dobj)
             dconstrs[:] = TF.T @ lu_solve(TF@dconstrs)
         elif ft == -1:
-            pass 
+            pass
         else:
             raise ValueError("No filter applied. ft: ", ft)
+        # backward filter policy: zero sensitivities at prescribed elements
+        if el_flags_policy is not None and el_flags_policy["correct_backward"]:
+            dobj[prescribed_mask]     = 0.
+            dconstrs[prescribed_mask] = 0.
         #
-        log.debug("Pre-Sensitivity Filter: it.: {0}, min(dobj): {1:.10f}, max(dobj): {2:.10f}, dv: {3:.10f}".format(
+        log.debug("Post-Sensitivity Filter: it.: {0}, min(dobj): {1:.10f}, max(dobj): {2:.10f}, dv: {3:.10f}".format(
                   loop, 
                   np.min(dobj), np.max(dobj), 
                   np.min(dconstrs)))
+        # scale objective and its gradient if requested
+        if "scale_factor" in obj_kw and obj_kw["scale_factor"] is not None:
+            obj   *= obj_kw["scale_factor"]
+            dobj  *= obj_kw["scale_factor"]
+        # scale each constraint and its gradient by its own factor if requested
+        for k, c in enumerate(constraints):
+            if c["scale_factor"] is not None:
+                constrs[k, 0]     *= c["scale_factor"]
+                dconstrs[:, k:k+1] *= c["scale_factor"]
         # design variables update by optimizer
+        if continuation_kw is not None:
+            run_continuation(continuation_kw, stage=0,
+                             filter_kw=filter_kw, optimizer_kw=optimizer_kw,
+                             logger=log)
         # optimality criteria
         if optimizer=="oc":
-            (x[:,0], g) = oc_top88(x=x[:,0], volfrac=volfrac,
-                                 dc=dobj[:,0], dv=dconstrs[:,0], g=g,
-                                 el_flags=el_flags)
+            (x[:,0], g) = oc_top88(x=x[:,0], 
+                                   volfrac=constraints[0]["value"],
+                                   dc=dobj[:,0], 
+                                   dv=dconstrs[:,0]*x[:,0].shape[0], 
+                                   g=g,
+                                   el_flags=el_flags)
         elif optimizer=="ocm":
-            (x[:,0], g) = oc_mechanism(x=x[:,0], volfrac=volfrac,
-                                     dc=dobj[:,0], dv=dconstrs[:,0], g=g,
-                                     el_flags=el_flags)
-        elif optimizer=="ocg":
-            (x[:,0], g) = oc_generalized(x=x[:,0], volfrac=volfrac,
-                                       dc=dobj[:,0], dv=dconstrs[:,0], g=g,
+            (x[:,0], g) = oc_mechanism(x=x[:,0], 
+                                       volfrac=constraints[0]["value"],
+                                       dc=dobj[:,0], 
+                                       dv=dconstrs[:,0]*x[:,0].shape[0], 
+                                       g=g,
                                        el_flags=el_flags)
+        elif optimizer=="ocg":
+            (x[:,0], g) = oc_generalized(x=x[:,0], 
+                                         volfrac=constraints[0]["value"],
+                                         dc=dobj[:,0], 
+                                         dv=dconstrs[:,0]*x[:,0].shape[0], 
+                                         g=g,
+                                         el_flags=el_flags)
         # method of moving asymptotes
         elif optimizer=="mma":
             xmma,ymma,zmma,lam,xsi,eta_mma,mu,zet,s,low,upp = mmasub(m=optimizer_kw["nconstr"],
                                                                  n=x.shape[0],
                                                                  iter=loop,
                                                                  xval=x,
-                                                                 xold1=xhist[-1],
-                                                                 xold2=xhist[-2],
+                                                                 xold1=hist["xhist"][-1],
+                                                                 xold2=hist["xhist"][-2],
                                                                  f0val=obj,
                                                                  df0dx=dobj,
                                                                  fval=constrs,
@@ -671,15 +965,10 @@ def main(nelx: int, nely: int,
             and loop >= accelerator_kw["accel_start"] and \
             accelerator_kw["accelerator"] is not None:
             x[:] = accelerator_kw["accelerator"](x=x.reshape( np.prod(x.shape), order="F" ),
-                                                 xhist=[_x.reshape( np.prod(x.shape), order="F" ) for _x in xhist],
+                                                 xhist=[_x.reshape( np.prod(x.shape), order="F" ) for _x in hist["xhist"]],
                                                  **accelerator_kw).reshape(x.shape,order="F")
         elif mix is not None:
-            x[:] = xhist[-1]*(1-mix) + x*mix
-        # append history
-        xhist.append(x.copy())
-        # prune history if too long
-        if len(xhist)> max_history+1:
-            xhist = xhist[-max_history-1:]
+            x[:] = hist["xhist"][-1]*(1-mix) + x*mix
         #
         log.debug("Post Mixing Update: it.: {0}, med. x.: {1:.10f}, med. xPhys: {2:.10f}".format(
                   loop, np.median(x),np.median(xPhys)))
@@ -696,6 +985,9 @@ def main(nelx: int, nely: int,
             else:
                 xPhys = ft[0].apply_filter(x=x,
                                            **filter_kw)
+            for _f in ft:
+                if _f.changes_filter_kw:
+                    _f.update_filter_kw(filter_kw)
         elif ft == 0:
             xPhys[:] = x
         elif ft == 1 and filter_mode == "matrix":
@@ -709,12 +1001,19 @@ def main(nelx: int, nely: int,
             xPhys[:] = TF.T @ lu_solve(TF@x)
         elif ft == -1:
             xPhys[:]  = x
-        print(xPhys)
+        # forward filter policy: restore prescribed densities after filtering
+        if el_flags_policy is not None and el_flags_policy["correct_forward"]:
+            xPhys[passive_mask] = 0.
+            xPhys[active_mask]  = 1.
+        # update and prune history (after forward filter so xPhys_hist is consistent)
+        update_history(**hist,
+                       x=x, xPhys=xPhys, obj=obj, constrs=constrs,
+                       max_history=max_history)
         #
         log.debug("Post Density Filter: it.: {0}, med. x.: {1:.10f}, med. xPhys: {2:.10f}".format(
                   loop, np.median(x),np.median(xPhys)))
-        # compute the change by the inf. norm
-        change = np.abs(xhist[-1] - xhist[-2]).max()
+        # compute the change
+        change = convergence_kw["change_func"](**hist,**convergence_kw)
         # plot to screen
         if output_kw["display"]:
             if ndim == 2:
@@ -729,25 +1028,45 @@ def main(nelx: int, nely: int,
                        xPhys=xPhys,x=x,
                        u=u,f=f,volfrac=volfrac)
         # write iteration history to screen (req. Python 2.6 or newer)
-        log.info("it.: {0} obj.: {1:.10f} vol.: {2:.10f} ch.: {3:.10f}".format(
-                     loop+1, obj, xPhys.mean(), change))
-        # convergence check
-        if change < 0.01 and not "beta" in filter_kw.keys():
-            break
-        elif change < 0.01 and \
-             "beta" in filter_kw.keys() and \
-             filter_kw["beta"] >= filter_kw["beta_limit"]:
-            break
-        elif change < 0.01 and \
-             "beta" in filter_kw.keys():
-            filter_kw["beta"] = filter_kw["beta"]*filter_kw["beta_scale"]
-            log.info("beta increased.: {0: .1f}".format(filter_kw["beta"]))
+        log.info("it.: {0} obj.: {1:.10f} vol.: {2:.10f} ch.: {3:.10f} constrs.: [{4}]".format(
+                     loop+1, obj, xPhys.mean(), change,
+                     ", ".join(f"{v:.6f}" for v in constrs[:,0])))
+        # convergence and parameter continuation check
+        if continuation_kw is None:
+            if change < convergence_kw["conv_tol"]:
+                break
+        else:
+            if run_continuation(continuation_kw, stage=1,
+                                **hist,
+                                change=change,
+                                loop=loop,
+                                filter_kw=filter_kw,
+                                optimizer_kw=optimizer_kw,
+                                conv_tol=convergence_kw["conv_tol"],
+                                logger=log):
+                break
     #
     if output_kw["export"]:
+        #
+        nodal_variables = {"u": u, 
+                           "f": f}
+        if springs is not None:
+            spring_array = np.zeros((u.shape[0],1))
+            spring_array[springs[0],0] = springs[1]
+            nodal_variables["springs"] = spring_array
+        if "l" in obj_kw.keys() and obj_kw["l"].shape[0] == u.shape[0]:
+            nodal_variables["l_obj"] = obj_kw["l"]
+        #
+        element_variables={"el_flags": el_flags, 
+                           "xPhys": xPhys, 
+                           "x": x}
+        #
         export_vtk(filename=output_kw["file"],
                    nelx=nelx,nely=nely,nelz=nelz,
-                   xPhys=xPhys,x=x,
-                   u=u,f=f,volfrac=volfrac)
+                   volfrac=volfrac, 
+                   elem_size=l,
+                   nodal_variables=nodal_variables,
+                   element_variables=element_variables)
     # finish profiling
     if output_kw["profile"]:
         profiler.disable()
@@ -756,4 +1075,8 @@ def main(nelx: int, nely: int,
     if output_kw["display"]:
         plt.show()
         input("Press any key...")
-    return x, obj
+    #
+    if output_kw["display"] and output_kw["save_pdf"]:
+        fig.savefig(output_kw["file"]+".pdf", 
+                    **output_kw["pdf_kw"])
+    return x, xTilde, xPhys, obj 
